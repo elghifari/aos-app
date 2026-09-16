@@ -43,15 +43,55 @@ Playbook metric: **Amber outputs shipped without sign-off must be zero.**
 ## Layout
 
 ```
-aos.py            authz + approvals core
+aos.py            authz, task lifecycle, approvals
+registry.py       agent registry + ownership
+seed_registry.py  seeds 25 roles from the playbook roster
 approvals.db      signature store (gitignored — audit data)
+registry.db       agent/owner store (gitignored — regenerate via seed)
 artifacts/        deliverables (gitignored)
 ```
+
+## The agent registry
+
+`tasks` is Hermes-owned and `hermes update` migrates it, so AOS adds no columns
+there. Tasks link to an agent through Hermes's native **`tenant`** field
+(`agent-10`); everything else lives in `registry.db`.
+
+Two facts the kanban schema cannot express:
+
+**A human owns an agent.** `tasks.assignee` is a *profile*, not a person.
+Ownership is many-to-many — the Clinical Director countersigns 11 agents across
+4 pods. `boards_for()` is *derived* from agent ownership, so there is no
+separate access map to drift out of sync with the roster.
+
+**13 of 25 roles have no Hermes worker.** 6 are deterministic n8n pipelines,
+7 are human seat work. They still need tasks, deliverables, and signatures.
+
+| Delivery box | Count | Worker? |
+| :--- | ---: | :--- |
+| `n8n+agent` | 5 | yes |
+| `agent` | 7 | yes |
+| `n8n` | 6 | no — deterministic pipeline |
+| `seat` | 7 | no — human |
+
+25 rather than 20 because composites split: 03a/03b, 07a/07b/07c, 11a/11b/11c.
+
+Consequences enforced in code:
+- `create_task()` assigns a profile **only** for agentic roles. Non-agentic
+  tasks are deliberately left unassigned, so no dispatcher can claim them.
+- `register()` refuses to attach a profile to a non-agentic role — 07a's
+  deterministic gate cannot accidentally be given a model.
+- `complete_by_human()` refuses to close a task belonging to an agentic role.
+- Every guardrail is queryable data, not prose in a task body.
+
+Seeded owners are **placeholders** (`u_hr`, `u_clinical_director`). Real
+identities come from HR; nothing in the registry is real until then.
 
 ## Running
 
 ```bash
 python -c "import aos; aos.init_approvals()"
+python seed_registry.py
 ```
 
 Requires a Hermes install with boards under `$LOCALAPPDATA/hermes/kanban/boards/`
@@ -60,11 +100,12 @@ Requires a Hermes install with boards under `$LOCALAPPDATA/hermes/kanban/boards/
 ## Status
 
 **Built and tested:** cross-pod read blocked · unqualified signer blocked ·
-signature recorded · post-signature tamper detected · review queue returns.
+signature recorded · post-signature tamper detected · review queue returns ·
+agentic task assigned to its profile · non-agentic task left unassigned ·
+human blocked from closing agentic work · human completion with deliverable ·
+wrong-board agent rejected.
 
-**Not built:** HTTP layer, real auth, per-agent `owner` column, support for
-non-agentic roles (03b, 06, 13, 15, 18, 19, 20 are human seat work and still
-need tasks, deliverables, and signatures).
+**Not built:** HTTP layer, real auth, real owner identities.
 
 ## Rules
 

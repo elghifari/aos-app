@@ -1,57 +1,44 @@
 """
-AOS authorization + approval layer.
+AOS authorization, task lifecycle, and the recorded Amber signature.
 
-Sits BESIDE Hermes, never over it. Hermes owns the agent runtime
-(profiles, dispatcher, cron, skills). This module owns:
-  - which humans may see which pods
-  - the recorded Amber signature the playbook requires
+Sits BESIDE Hermes, never over it. Hermes owns the agent runtime (profiles,
+dispatcher, cron, skills). This module owns who may see what, how work is
+created and completed, and the signature an accreditor asks for.
 
-Board DBs are read-only here. Writes to tasks go through the
-`hermes kanban` CLI so schema invariants stay Hermes's problem.
+Board DBs are read-only here. Writes to tasks go through the `hermes kanban`
+CLI so schema invariants stay Hermes's problem.
+
+THIRTEEN OF TWENTY-FIVE ROLES HAVE NO HERMES WORKER. Six are deterministic
+n8n pipelines, seven are human seat work. They still need tasks, deliverables,
+and signatures on the same boards — so nothing here may assume a task has a
+worker behind it.
 """
 import hashlib
+import json
 import os
 import sqlite3
 import subprocess
 import time
 from pathlib import Path
 
+import registry as R
+
 HERMES = Path(os.environ["LOCALAPPDATA"]) / "hermes"
 BOARDS = HERMES / "kanban" / "boards"
 APPROVALS_DB = Path(__file__).parent / "approvals.db"
 
+# Amber sign-off authority, per pod. Playbook 18.2/18.4.
+# Resolved through the registry's countersigner role where one exists.
+AMBER_SIGNER_ROLE = "countersigner"
+
+
 # ---------------------------------------------------------------- authz
 
-# The entire authorization model. A join, not a filter.
-POD_ACCESS = {
-    "budi@talenta.id":    ["p1-growth"],
-    "sari@talenta.id":    ["p2-access"],
-    "siti@talenta.id":    ["p3-people"],
-    "quality@talenta.id": ["p4-quality"],
-    "yazid@talenta.id":   ["p5-research"],
-    "principal@talenta.id": ["p6-education"],
-    # Clinical Director signs Amber across every clinical-adjacent pod
-    "drsuzy@talenta.id":  ["p1-growth", "p2-access", "p4-quality",
-                           "p5-research", "p6-education"],
-    "el@talenta.id":      ["*"],  # IT / AI Ops convenor
-}
-
-# Who may sign an Amber output, per pod. Playbook 18.2/18.4.
-AMBER_SIGNERS = {
-    "p1-growth":    ["budi@talenta.id", "drsuzy@talenta.id"],
-    "p2-access":    ["drsuzy@talenta.id"],
-    "p3-people":    ["siti@talenta.id"],
-    "p4-quality":   ["drsuzy@talenta.id"],
-    "p5-research":  ["drsuzy@talenta.id", "yazid@talenta.id"],
-    "p6-education": ["principal@talenta.id", "drsuzy@talenta.id"],
-}
-
-
 def boards_for(user: str) -> list[str]:
-    grants = POD_ACCESS.get(user, [])
-    if "*" in grants:
-        return sorted(p.name for p in BOARDS.iterdir() if p.is_dir())
-    return grants
+    """Derived from agent ownership — a person sees exactly the pods where
+    they own at least one agent. No separately-maintained access map to
+    drift out of sync with the roster."""
+    return R.boards_for(user)
 
 
 def _connect(board: str) -> sqlite3.Connection:
@@ -63,13 +50,17 @@ def _connect(board: str) -> sqlite3.Connection:
     return con
 
 
-def tasks_for(user: str, board: str) -> list[dict]:
-    """Authorization is enforced HERE, before any query runs."""
+def _authorize(user: str, board: str) -> None:
     if board not in boards_for(user):
         raise PermissionError(f"{user} has no access to {board}")
+
+
+def tasks_for(user: str, board: str) -> list[dict]:
+    """Authorization enforced HERE, before any query runs."""
+    _authorize(user, board)
     con = _connect(board)
     rows = con.execute("""
-        SELECT t.id, t.title, t.status, t.priority, t.assignee,
+        SELECT t.id, t.title, t.status, t.priority, t.assignee, t.tenant,
                t.result, t.completed_at,
                (SELECT COUNT(*) FROM task_attachments a
                  WHERE a.task_id = t.id) AS deliverables
@@ -77,12 +68,30 @@ def tasks_for(user: str, board: str) -> list[dict]:
         ORDER BY t.status, t.priority
     """).fetchall()
     con.close()
-    return [dict(r) for r in rows]
+
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["agent_no"] = R.agent_of_task(d)
+        d["dispatchable"] = (
+            R.is_dispatchable(d["agent_no"]) if d["agent_no"] else None)
+        out.append(d)
+    return out
+
+
+def my_tasks(user: str) -> list[dict]:
+    """Every task for every agent this person owns, across all their pods."""
+    mine = {a["agent_no"] for a in R.agents_for_user(user)}
+    out = []
+    for board in boards_for(user):
+        for t in tasks_for(user, board):
+            if t["agent_no"] in mine:
+                out.append({**t, "board": board})
+    return out
 
 
 def deliverables(user: str, board: str, task_id: str) -> list[dict]:
-    if board not in boards_for(user):
-        raise PermissionError(f"{user} has no access to {board}")
+    _authorize(user, board)
     con = _connect(board)
     rows = con.execute("""
         SELECT id, filename, stored_path, content_type,
@@ -91,6 +100,75 @@ def deliverables(user: str, board: str, task_id: str) -> list[dict]:
     """, (task_id,)).fetchall()
     con.close()
     return [dict(r) for r in rows]
+
+
+# ----------------------------------------------------- task lifecycle
+
+def _kanban(board: str, *args: str) -> str:
+    cmd = ["hermes", "kanban", "--board", board, *args]
+    return subprocess.run(cmd, capture_output=True, text=True,
+                          check=True).stdout
+
+
+def create_task(user: str, board: str, agent_no: str, title: str, body: str,
+                priority: int = 3) -> str:
+    """Create work for an agent.
+
+    Dispatchability is decided by the registry, not the caller. An agentic
+    role is assigned to its pod profile so the dispatcher picks it up; a
+    non-agentic role is deliberately left UNASSIGNED so no worker ever
+    claims it — its task is completed by a human or an n8n pipeline.
+    """
+    _authorize(user, board)
+    agent = R.get_agent(agent_no)
+    if agent is None:
+        raise ValueError(f"unknown agent: {agent_no}")
+    if agent["board"] != board:
+        raise ValueError(
+            f"agent {agent_no} belongs to {agent['board']}, not {board}")
+
+    out = _kanban(board, "create", title, "--body", body,
+                  "--priority", str(priority),
+                  "--tenant", R.tenant_for(agent_no), "--json")
+    task_id = json.loads(out)["id"]
+
+    if agent["is_agentic"]:
+        _kanban(board, "assign", task_id, agent["profile"])
+    # else: intentionally unassigned. A dispatcher cannot claim an
+    # unassigned task, which is exactly the behaviour we want.
+    return task_id
+
+
+def complete_by_human(user: str, board: str, task_id: str,
+                      result: str, artifact_path: str | None = None) -> None:
+    """Completion path for NON-AGENTIC roles (seat work and n8n output).
+
+    A Hermes worker completes its own task; nobody completes these, so the
+    owner does it here. Refuses to touch a task belonging to an agentic
+    role — that would let a human silently close work a worker is running.
+    """
+    _authorize(user, board)
+    task = _get_task(board, task_id)
+    agent_no = R.agent_of_task(task)
+    if agent_no and R.is_dispatchable(agent_no):
+        raise ValueError(
+            f"task {task_id} belongs to agentic agent {agent_no} — "
+            f"its worker completes it, not a human")
+    if agent_no and user not in R.owners_of(agent_no):
+        raise PermissionError(f"{user} does not own agent {agent_no}")
+
+    if artifact_path:
+        _kanban(board, "attach", task_id, artifact_path, "--author", user)
+    _kanban(board, "complete", task_id, "--result", result)
+
+
+def _get_task(board: str, task_id: str) -> dict:
+    con = _connect(board)
+    row = con.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    con.close()
+    if row is None:
+        raise ValueError(f"no such task: {task_id}")
+    return dict(row)
 
 
 # ------------------------------------------------------- amber signature
@@ -102,6 +180,7 @@ def init_approvals() -> None:
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             board         TEXT NOT NULL,
             task_id       TEXT NOT NULL,
+            agent_no      TEXT,
             signer        TEXT NOT NULL,
             signer_role   TEXT NOT NULL,
             decision      TEXT NOT NULL CHECK (decision IN ('approved','rejected')),
@@ -118,11 +197,22 @@ def sign(board: str, task_id: str, signer: str, signer_role: str,
          decision: str, artifact_path: str, note: str = "") -> dict:
     """Record an Amber sign-off.
 
+    Signing authority comes from the registry's countersigner role for the
+    agent in question. Works identically for agentic and non-agentic roles —
+    a human-drafted article needs the same signature as a model-drafted one.
+
     artifact_hash pins the signature to the exact bytes reviewed, so a
-    deliverable cannot be swapped after sign-off without detection.
+    deliverable swapped after sign-off is detectable.
     """
-    if signer not in AMBER_SIGNERS.get(board, []):
-        raise PermissionError(f"{signer} is not a qualified signer for {board}")
+    task = _get_task(board, task_id)
+    agent_no = R.agent_of_task(task)
+    if agent_no is None:
+        raise ValueError(f"task {task_id} is not linked to an agent")
+
+    authorized = R.owners_of(agent_no, AMBER_SIGNER_ROLE)
+    if signer not in authorized:
+        raise PermissionError(
+            f"{signer} is not a qualified signer for agent {agent_no}")
 
     digest = hashlib.sha256(Path(artifact_path).read_bytes()).hexdigest()
     now = int(time.time())
@@ -130,19 +220,24 @@ def sign(board: str, task_id: str, signer: str, signer_role: str,
     con = sqlite3.connect(APPROVALS_DB)
     con.execute("""
         INSERT INTO approvals
-            (board, task_id, signer, signer_role, decision,
+            (board, task_id, agent_no, signer, signer_role, decision,
              note, artifact_hash, signed_at)
-        VALUES (?,?,?,?,?,?,?,?)
-    """, (board, task_id, signer, signer_role, decision,
+        VALUES (?,?,?,?,?,?,?,?,?)
+    """, (board, task_id, agent_no, signer, signer_role, decision,
           note, digest, now))
     con.commit()
     con.close()
-    return {"task_id": task_id, "signer": signer, "decision": decision,
-            "artifact_hash": digest, "signed_at": now}
+    return {"task_id": task_id, "agent_no": agent_no, "signer": signer,
+            "decision": decision, "artifact_hash": digest, "signed_at": now}
 
 
 def unsigned_amber(user: str) -> list[dict]:
-    """The review queue. Playbook metric: this must never age past 10 days."""
+    """The review queue. Amber tasks that are done but unsigned.
+
+    Playbook metrics this implements:
+      - Amber outputs shipped without sign-off  -> must be zero
+      - Review queue age (oldest unsigned item) -> <= 10 working days
+    """
     con = sqlite3.connect(APPROVALS_DB)
     signed = {r[0] for r in con.execute("SELECT task_id FROM approvals")}
     con.close()
@@ -150,25 +245,12 @@ def unsigned_amber(user: str) -> list[dict]:
     out = []
     for board in boards_for(user):
         for t in tasks_for(user, board):
-            if t["status"] == "done" and t["id"] not in signed:
-                age_days = (time.time() - (t["completed_at"] or 0)) / 86400
-                out.append({**t, "board": board, "age_days": round(age_days, 1)})
+            if t["status"] != "done" or t["id"] in signed:
+                continue
+            agent = R.get_agent(t["agent_no"]) if t["agent_no"] else None
+            if not agent or agent["zone"] != "amber":
+                continue
+            age = (time.time() - (t["completed_at"] or 0)) / 86400
+            out.append({**t, "board": board, "agent_name": agent["name"],
+                        "age_days": round(age, 1)})
     return sorted(out, key=lambda r: -r["age_days"])
-
-
-# --------------------------------------------------------------- write
-
-def create_task(user: str, board: str, title: str, body: str,
-                assignee: str | None = None, priority: int = 3) -> str:
-    """Trigger an agent run. Goes through the CLI, not raw SQL."""
-    if board not in boards_for(user):
-        raise PermissionError(f"{user} has no access to {board}")
-    cmd = ["hermes", "kanban", "--board", board, "create", title,
-           "--body", body, "--priority", str(priority), "--json"]
-    out = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    import json
-    task = json.loads(out.stdout)
-    if assignee:
-        subprocess.run(["hermes", "kanban", "--board", board,
-                        "assign", task["id"], assignee], check=True)
-    return task["id"]
