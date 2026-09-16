@@ -42,6 +42,30 @@
   <div class="empty">Nothing waiting. Amber outputs shipped without sign-off: zero.</div>
 {% endif %}
 
+{# ── Oversight ────────────────────────────────────────────── #}
+{% if oversight %}
+<h2>Unsigned elsewhere in your pods
+  <span class="muted">({{ oversight|length }})</span>
+</h2>
+{% for t in oversight %}
+<div class="card">
+  <div class="row">
+    <div>
+      <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+      <span class="tag amber">amber</span>
+      <div class="muted"><a href="/agent/{{ t.agent_no }}?as={{ user }}">{{ t.agent_name }}</a>
+        · {{ t.board }} · not yours to sign</div>
+    </div>
+    <div class="age {{ 'over' if t.age_days > 10 }}">{{ t.age_days }}d</div>
+  </div>
+</div>
+{% endfor %}
+<p class="muted">
+  Visible for clinical oversight. Signing authority is per-agent, so these
+  are another owner's to sign.
+</p>
+{% endif %}
+
 {# ── Blocked work ─────────────────────────────────────────── #}
 <h2>Stopped and won't restart
   <span class="muted">({{ blocked|length }})</span>
@@ -62,10 +86,14 @@
       </div>
       <div style="text-align:right">
         <div class="age over">{{ t.stalled_hours }}h</div>
+        {% if t.can_retry %}
         <form method="post" action="/unblock/{{ t.board }}/{{ t.id }}" style="margin-top:.4rem">
           <input type="hidden" name="user" value="{{ user }}">
           <button class="small">Retry</button>
         </form>
+        {% else %}
+        <div class="muted" style="margin-top:.4rem; font-size:.78rem">owner retries</div>
+        {% endif %}
       </div>
     </div>
   </div>

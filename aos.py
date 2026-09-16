@@ -267,7 +267,12 @@ def blocked_tasks(user: str) -> list[dict]:
             out.append({**d, "board": board, "agent_no": agent_no,
                         "agent_name": agent["name"] if agent else "—",
                         "zone": agent["zone"] if agent else None,
-                        "stalled_hours": round(stalled, 1)})
+                        "stalled_hours": round(stalled, 1),
+                        # Visible for oversight, but only the agent's own
+                        # owner may retry it. The UI must not offer an
+                        # action the caller will be refused.
+                        "can_retry": bool(agent_no) and user in
+                                     R.owners_of(agent_no, "owner")})
     return sorted(out, key=lambda r: -r["stalled_hours"])
 
 
@@ -361,9 +366,9 @@ def agent_tasks(user: str, agent_no: str) -> list[dict]:
     agent = R.get_agent(agent_no)
     if agent is None:
         raise ValueError(f"unknown agent: {agent_no}")
-    if user not in (R.owners_of(agent_no, "owner")
-                    + R.owners_of(agent_no, "countersigner")):
-        raise PermissionError(f"{user} does not own agent {agent_no}")
+    # Viewing an agent requires board access, not ownership: clinical
+    # leadership oversees every flow in a pod they are attached to.
+    # _authorize() inside tasks_for() enforces the board boundary.
 
     con = sqlite3.connect(APPROVALS_DB)
     signed = {r[0] for r in con.execute("SELECT task_id FROM approvals")}
@@ -378,13 +383,36 @@ def agent_tasks(user: str, agent_no: str) -> list[dict]:
     return out
 
 
-def unsigned_amber(user: str) -> list[dict]:
+def unsigned_amber(user: str, mine_only: bool = True) -> list[dict]:
     """The review queue. Amber tasks that are done but unsigned.
+
+    VISIBILITY VS SIGNING AUTHORITY — these are deliberately different.
+
+    Visibility is board-level: clinical leadership retains sight of every
+    clinical flow in a pod they are attached to, even for agents they do
+    not personally sign. That is a governance decision, not an oversight
+    — the Clinical Director's remit is the clinic's clinical safety, and
+    narrowing her view to her own agents would trade real oversight for
+    tidy permissions.
+
+    Signing authority is per-agent, and this queue defaults to it. A
+    queue headed "needs your signature" must contain only work the
+    reader can actually sign, or the one queue that has to stay clean
+    fills with items its owner cannot act on. The Clinical Director
+    countersigns 11 agents across 4 pods; she is the named bottleneck,
+    and noise here is expensive.
+
+    Pass mine_only=False for the oversight view: everything unsigned on
+    every board the user can see, including agents they do not sign.
 
     Playbook metrics this implements:
       - Amber outputs shipped without sign-off  -> must be zero
       - Review queue age (oldest unsigned item) -> <= 10 working days
     """
+    signable = set()
+    if mine_only:
+        signable = {a["agent_no"] for a in R.agents_for_user(user)
+                    if a["ownership"] == AMBER_SIGNER_ROLE}
     con = sqlite3.connect(APPROVALS_DB)
     signed = {r[0] for r in con.execute("SELECT task_id FROM approvals")}
     con.close()
@@ -396,6 +424,8 @@ def unsigned_amber(user: str) -> list[dict]:
                 continue
             agent = R.get_agent(t["agent_no"]) if t["agent_no"] else None
             if not agent or agent["zone"] != "amber":
+                continue
+            if mine_only and t["agent_no"] not in signable:
                 continue
             age = (time.time() - (t["completed_at"] or 0)) / 86400
             out.append({**t, "board": board, "agent_name": agent["name"],

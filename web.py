@@ -57,6 +57,8 @@ def home(request: Request, as_: str | None = Query(None, alias="as")):
         "agents": agents,
         "boards": aos.boards_for(user),
         "review": aos.unsigned_amber(user),
+        "oversight": [t for t in aos.unsigned_amber(user, mine_only=False)
+                      if t["id"] not in {r["id"] for r in aos.unsigned_amber(user)}],
         "blocked": aos.blocked_tasks(user),
         "env": AOS_ENV,
     })
