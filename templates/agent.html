@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{{ agent.agent_no }} — {{ agent.name }}{% endblock %}
+{% block body %}
+
+<header>
+  <h1><a href="/?as={{ user }}" style="text-decoration:none">&larr;</a>
+    {{ agent.agent_no }} · {{ agent.name }}</h1>
+  <span class="muted">{{ user }}</span>
+</header>
+
+<div class="card">
+  <div class="row">
+    <div>
+      <span class="tag {{ agent.zone }}">{{ agent.zone }}</span>
+      {% if not agent.is_agentic %}
+        <span class="muted">no worker — completed by
+          {{ "a human" if agent.delivery_box == "seat" else "an n8n pipeline" }}</span>
+      {% endif %}
+    </div>
+  </div>
+  <dl style="margin-top:.7rem">
+    <dt>Pod</dt><dd>{{ agent.board }}</dd>
+    <dt>Delivery</dt><dd>{{ agent.delivery_box }}</dd>
+    <dt>Cadence</dt><dd>{{ agent.cadence or "on demand" }}</dd>
+    <dt>Profile</dt>
+    <dd>{% if agent.profile %}<code>{{ agent.profile }}</code>{% else %}—{% endif %}</dd>
+    <dt>Owner</dt><dd>{{ owners | join(", ") or "—" }}</dd>
+    {% if countersigners %}
+    <dt>Countersigner</dt><dd>{{ countersigners | join(", ") }}</dd>
+    {% endif %}
+  </dl>
+  <div class="guard"><strong>Guardrail.</strong> {{ agent.guardrail }}</div>
+  {% if agent.zone == "amber" %}
+  <p class="muted" style="margin:.4rem 0 0">
+    Amber. Every output needs a named signature before it ships, recorded
+    against the sha256 of the reviewed file.
+  </p>
+  {% endif %}
+</div>
+
+<h2>Work <span class="muted">({{ tasks|length }})</span></h2>
+
+{% if tasks %}
+  {% for t in tasks %}
+  <div class="card {{ 'warn' if t.status == 'blocked' }}">
+    <div class="row">
+      <div>
+        {% if t.status == 'done' %}
+          <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+        {% else %}
+          <span class="title">{{ t.title }}</span>
+        {% endif %}
+        <div class="muted">
+          {{ t.status }}
+          {%- if t.deliverables %} · {{ t.deliverables }} file{{ "s" if t.deliverables != 1 }}{% endif %}
+          {%- if t.assignee %} · {{ t.assignee }}{% endif %}
+        </div>
+      </div>
+      <div style="text-align:right; white-space:nowrap">
+        {% if agent.zone == "amber" and t.status == "done" %}
+          {% if t.signed %}
+            <span class="tag" style="background:#dcfce7;color:#15803d">signed</span>
+          {% else %}
+            <span class="tag amber">unsigned</span>
+          {% endif %}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+{% else %}
+  <div class="empty">No work yet.</div>
+{% endif %}
+
+{% endblock %}

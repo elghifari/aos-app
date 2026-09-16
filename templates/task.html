@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}{{ task.title }}{% endblock %}
+{% block body %}
+
+<header>
+  <h1><a href="/?as={{ user }}" style="text-decoration:none">&larr;</a> Review</h1>
+  <span class="muted">{{ user }}</span>
+</header>
+
+<div class="card">
+  <strong>{{ task.title }}</strong>
+  {% if agent %}<span class="tag {{ agent.zone }}">{{ agent.zone }}</span>{% endif %}
+  <dl style="margin-top:.7rem">
+    <dt>Agent</dt><dd>{{ agent.agent_no }} · {{ agent.name }}</dd>
+    <dt>Pod</dt><dd>{{ board }}</dd>
+    <dt>Completed by</dt>
+    <dd>{% if agent.is_agentic %}worker ({{ task.assignee }}){% else %}human · {{ agent.delivery_box }}{% endif %}</dd>
+    <dt>Result</dt><dd>{{ task.result or "—" }}</dd>
+  </dl>
+  {% if agent %}<div class="guard"><strong>Guardrail.</strong> {{ agent.guardrail }}</div>{% endif %}
+</div>
+
+<h2>Deliverables</h2>
+{% if files %}
+  {% for f in files %}
+  <div class="card">
+    <div class="row">
+      <div>
+        <strong>{{ f.filename }}</strong>
+        <div class="muted">{{ (f.size_bytes / 1024) | round(1) }} KB · {{ f.uploaded_by or "—" }}</div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+{% else %}
+  <div class="empty">No files attached.</div>
+{% endif %}
+
+<h2>Sign</h2>
+{% if not can_sign %}
+  <div class="empty">
+    You are not a qualified signer for agent {{ agent.agent_no if agent else "—" }}.
+    Signing authority is per-agent and set in the registry.
+  </div>
+{% elif not files %}
+  <div class="empty">
+    Nothing to sign. A signature is pinned to the sha256 of the exact bytes
+    reviewed, so there must be a file.
+  </div>
+{% else %}
+  <form method="post" action="/sign/{{ board }}/{{ task.id }}">
+    <input type="hidden" name="user" value="{{ user }}">
+    <input type="hidden" name="artifact" value="{{ files[0].stored_path }}">
+    <p class="muted" style="margin:.2rem 0 .6rem">
+      Signing <strong>{{ files[0].filename }}</strong>. The hash is recorded, so
+      a file swapped after sign-off is detectable.
+    </p>
+    <textarea name="note" rows="3" placeholder="What did you check? (recorded with the signature)"></textarea>
+    <div style="margin-top:.7rem; display:flex; gap:.5rem">
+      <button class="primary" name="decision" value="approved">Approve</button>
+      <button class="danger"  name="decision" value="rejected">Reject</button>
+    </div>
+  </form>
+{% endif %}
+
+{% endblock %}

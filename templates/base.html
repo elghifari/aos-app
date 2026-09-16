@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}AOS{% endblock %}</title>
+<style>
+  :root {
+    --fg: #1a1a1a; --muted: #6b6b6b; --line: #e2e2e2;
+    --bg: #fbfbfa; --card: #fff;
+    --amber: #b45309; --amber-bg: #fef3c7;
+    --red: #b91c1c;   --red-bg: #fee2e2;
+    --green: #15803d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font: 15px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: var(--fg); background: var(--bg);
+    margin: 0; padding: 1rem;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 1rem; flex-wrap: wrap; margin-bottom: .25rem;
+  }
+  h1 { font-size: 1.15rem; margin: 0; }
+  h2 { font-size: .95rem; margin: 1.75rem 0 .6rem; }
+  a { color: inherit; }
+  .muted { color: var(--muted); font-size: .85rem; }
+  .devbar {
+    background: var(--amber-bg); color: var(--amber);
+    border: 1px solid #fcd34d; border-radius: 6px;
+    padding: .5rem .7rem; font-size: .8rem; margin: .75rem 0 1.25rem;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 8px; padding: .8rem .9rem; margin-bottom: .55rem;
+  }
+  .card.warn { border-left: 3px solid var(--red); }
+  .card.amber { border-left: 3px solid var(--amber); }
+  .row { display: flex; justify-content: space-between; gap: .75rem; }
+  .title { font-weight: 550; text-decoration: none; }
+  .tag {
+    display: inline-block; font-size: .7rem; padding: .1rem .45rem;
+    border-radius: 4px; vertical-align: 1px;
+  }
+  .tag.amber { background: var(--amber-bg); color: var(--amber); }
+  .tag.red   { background: var(--red-bg);   color: var(--red); }
+  .age { font-size: .8rem; color: var(--muted); white-space: nowrap; }
+  .age.over { color: var(--red); font-weight: 600; }
+  .empty {
+    color: var(--muted); font-size: .88rem; padding: .9rem;
+    border: 1px dashed var(--line); border-radius: 8px;
+  }
+  .err {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .78rem; color: var(--red);
+    background: var(--red-bg); padding: .3rem .5rem;
+    border-radius: 4px; margin-top: .45rem;
+    word-break: break-word;
+  }
+  button {
+    font: inherit; padding: .45rem .9rem; border-radius: 6px;
+    border: 1px solid var(--line); background: #fff; cursor: pointer;
+  }
+  button.primary { background: var(--fg); color: #fff; border-color: var(--fg); }
+  button.danger  { background: #fff; color: var(--red); border-color: #fca5a5; }
+  button.small   { padding: .28rem .6rem; font-size: .82rem; }
+  textarea, input[type=text] {
+    font: inherit; width: 100%; padding: .5rem;
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  dl { display: grid; grid-template-columns: max-content 1fr;
+       gap: .3rem .9rem; margin: 0; font-size: .88rem; }
+  dt { color: var(--muted); }
+  dd { margin: 0; }
+  .guard {
+    background: var(--amber-bg); border-radius: 6px;
+    padding: .6rem .7rem; font-size: .85rem; margin: .8rem 0;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  {% block body %}{% endblock %}
+</div>
+</body>
+</html>

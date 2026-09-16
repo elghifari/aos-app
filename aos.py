@@ -231,6 +231,80 @@ def sign(board: str, task_id: str, signer: str, signer_role: str,
             "decision": decision, "artifact_hash": digest, "signed_at": now}
 
 
+def blocked_tasks(user: str) -> list[dict]:
+    """Work that stopped and will not restart by itself.
+
+    The dispatcher gives up after a small number of consecutive failures
+    (2 by default) and parks the task as `blocked`. Nothing notifies
+    anyone, so without this view a pod owner's first signal is work that
+    silently never arrived — a weekly agent that blocked on Tuesday looks
+    identical to one that had nothing to do.
+
+    Shared-quota exhaustion is the common cause: the worker spawns, waits
+    on an API call that never returns, dies, retries into the same wall,
+    and gives up. That is the dispatcher behaving correctly, but it is
+    invisible without somewhere to show it.
+    """
+    out = []
+    for board in boards_for(user):
+        _authorize(user, board)
+        con = _connect(board)
+        rows = con.execute("""
+            SELECT id, title, status, assignee, tenant,
+                   consecutive_failures, last_failure_error,
+                   last_heartbeat_at, created_at
+            FROM tasks
+            WHERE status = 'blocked'
+            ORDER BY last_heartbeat_at DESC
+        """).fetchall()
+        con.close()
+        for r in rows:
+            d = dict(r)
+            agent_no = R.agent_of_task(d)
+            agent = R.get_agent(agent_no) if agent_no else None
+            stalled = (time.time() - (d["last_heartbeat_at"] or
+                                      d["created_at"] or 0)) / 3600
+            out.append({**d, "board": board, "agent_no": agent_no,
+                        "agent_name": agent["name"] if agent else "—",
+                        "zone": agent["zone"] if agent else None,
+                        "stalled_hours": round(stalled, 1)})
+    return sorted(out, key=lambda r: -r["stalled_hours"])
+
+
+def unblock(user: str, board: str, task_id: str) -> None:
+    """Return a blocked task to the queue. Ownership is required — a
+    person may only retry work for an agent they own."""
+    _authorize(user, board)
+    task = _get_task(board, task_id)
+    agent_no = R.agent_of_task(task)
+    if agent_no and user not in R.owners_of(agent_no):
+        raise PermissionError(f"{user} does not own agent {agent_no}")
+    _kanban(board, "unblock", task_id)
+
+
+def agent_tasks(user: str, agent_no: str) -> list[dict]:
+    """Every task for one agent. Ownership required — an agent is only
+    visible to the people who own or countersign it."""
+    agent = R.get_agent(agent_no)
+    if agent is None:
+        raise ValueError(f"unknown agent: {agent_no}")
+    if user not in (R.owners_of(agent_no, "owner")
+                    + R.owners_of(agent_no, "countersigner")):
+        raise PermissionError(f"{user} does not own agent {agent_no}")
+
+    con = sqlite3.connect(APPROVALS_DB)
+    signed = {r[0] for r in con.execute("SELECT task_id FROM approvals")}
+    con.close()
+
+    out = []
+    for t in tasks_for(user, agent["board"]):
+        if t["agent_no"] != agent_no:
+            continue
+        out.append({**t, "board": agent["board"],
+                    "signed": t["id"] in signed})
+    return out
+
+
 def unsigned_amber(user: str) -> list[dict]:
     """The review queue. Amber tasks that are done but unsigned.
 

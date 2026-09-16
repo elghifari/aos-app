@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}AOS — {{ user }}{% endblock %}
+{% block body %}
+
+<header>
+  <h1>AOS</h1>
+  <span class="muted">{{ user }} · {{ agents|length }} agents · {{ boards|join(", ") }}</span>
+</header>
+
+{% if env == "development" %}
+<div class="devbar">
+  <strong>Development.</strong> Identity is a query parameter, not authentication.
+  Switch user with <code>?as=u_hr</code>. Nothing here is a real signature.
+</div>
+{% endif %}
+
+{# ── Review queue ─────────────────────────────────────────── #}
+<h2>Needs your signature
+  <span class="muted">({{ review|length }})</span>
+</h2>
+
+{% if review %}
+  {% for t in review %}
+  <div class="card amber">
+    <div class="row">
+      <div>
+        <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+        <span class="tag amber">amber</span>
+        <div class="muted"><a href="/agent/{{ t.agent_no }}?as={{ user }}">{{ t.agent_name }}</a> · {{ t.board }}
+          {%- if t.deliverables %} · {{ t.deliverables }} file{{ "s" if t.deliverables != 1 }}{% endif %}</div>
+      </div>
+      <div class="age {{ 'over' if t.age_days > 10 }}">
+        {{ t.age_days }}d
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  {% if review | selectattr("age_days", ">", 10) | list %}
+  <p class="muted">Items over 10 days breach the playbook's review-queue-age target.</p>
+  {% endif %}
+{% else %}
+  <div class="empty">Nothing waiting. Amber outputs shipped without sign-off: zero.</div>
+{% endif %}
+
+{# ── Blocked work ─────────────────────────────────────────── #}
+<h2>Stopped and won't restart
+  <span class="muted">({{ blocked|length }})</span>
+</h2>
+
+{% if blocked %}
+  {% for t in blocked %}
+  <div class="card warn">
+    <div class="row">
+      <div>
+        <span class="title">{{ t.title }}</span>
+        {% if t.zone %}<span class="tag {{ t.zone }}">{{ t.zone }}</span>{% endif %}
+        <div class="muted"><a href="/agent/{{ t.agent_no }}?as={{ user }}">{{ t.agent_name }}</a> · {{ t.board }}
+          · gave up after {{ t.consecutive_failures }} attempts</div>
+        {% if t.last_failure_error %}
+        <div class="err">{{ t.last_failure_error }}</div>
+        {% endif %}
+      </div>
+      <div style="text-align:right">
+        <div class="age over">{{ t.stalled_hours }}h</div>
+        <form method="post" action="/unblock/{{ t.board }}/{{ t.id }}" style="margin-top:.4rem">
+          <input type="hidden" name="user" value="{{ user }}">
+          <button class="small">Retry</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  <p class="muted">
+    The dispatcher stops after repeated failures and does not notify anyone.
+    Shared-quota exhaustion is the usual cause — the worker waits on a call
+    that never returns, then retries into the same wall.
+  </p>
+{% else %}
+  <div class="empty">No blocked work.</div>
+{% endif %}
+
+{# ── Agents owned ─────────────────────────────────────────── #}
+<h2>Your agents</h2>
+{% for a in agents %}
+<div class="card">
+  <div class="row">
+    <div>
+      <a class="title" href="/agent/{{ a.agent_no }}?as={{ user }}">
+        <strong>{{ a.agent_no }}</strong> {{ a.name }}</a>
+      <span class="tag {{ a.zone }}">{{ a.zone }}</span>
+      {% if not a.is_agentic %}<span class="muted">· no worker ({{ a.delivery_box }})</span>{% endif %}
+    </div>
+    <span class="muted">{{ a.ownership }}</span>
+  </div>
+  <div class="guard">{{ a.guardrail }}</div>
+</div>
+{% endfor %}
+
+{% endblock %}
