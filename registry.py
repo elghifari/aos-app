@@ -46,7 +46,7 @@ def init_registry() -> None:
         CREATE TABLE IF NOT EXISTS agent_owners (
             agent_no  TEXT NOT NULL,
             user_id   TEXT NOT NULL,
-            role      TEXT NOT NULL,   -- 'owner' | 'countersigner'
+            role      TEXT NOT NULL,   -- 'owner' | 'countersigner' | 'consumer'
             PRIMARY KEY (agent_no, user_id, role),
             FOREIGN KEY (agent_no) REFERENCES agents(agent_no)
         );
@@ -85,7 +85,8 @@ def agents_for_user(user_id: str) -> list[dict]:
 def boards_for(user_id: str) -> list[str]:
     """Derived from agent ownership, not configured separately — a person can
     see exactly the pods where they own at least one agent."""
-    return sorted({a["board"] for a in agents_for_user(user_id)})
+    return sorted({a["board"] for a in agents_for_user(user_id)
+                   if a["ownership"] in ("owner", "countersigner")})
 
 
 def owners_of(agent_no: str, role: str = "owner") -> list[str]:
@@ -138,3 +139,31 @@ def register(agent_no, name, board, zone, delivery_box, guardrail,
                     (agent_no, user_id, role))
     con.commit()
     con.close()
+
+
+# Who may do what with an agent.
+#   owner         — accountable; creates work, retries it, completes seat work
+#   countersigner — signs Amber output before it is releasable
+#   consumer      — reads SIGNED deliverables only. Never owns, never signs,
+#                   never sees the pod queue. This is the content writer who
+#                   collects a cleared evidence table and drafts elsewhere.
+ROLES = ("owner", "countersigner", "consumer")
+
+
+def consumers_of(agent_no: str) -> list[str]:
+    return owners_of(agent_no, "consumer")
+
+
+def agents_readable_by(user_id: str) -> list[dict]:
+    """Agents whose signed output this person may collect. Distinct from
+    agents_for_user(), which is about accountability."""
+    con = sqlite3.connect(REGISTRY_DB)
+    con.row_factory = sqlite3.Row
+    rows = con.execute("""
+        SELECT a.*, o.role AS ownership
+        FROM agents a JOIN agent_owners o ON o.agent_no = a.agent_no
+        WHERE o.user_id = ? AND a.active = 1
+        ORDER BY a.board, a.agent_no
+    """, (user_id,)).fetchall()
+    con.close()
+    return [dict(r) for r in rows]

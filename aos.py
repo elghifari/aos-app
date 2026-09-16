@@ -315,6 +315,46 @@ def runs(user: str, board: str, task_id: str) -> list[dict]:
     return out
 
 
+
+class NotSigned(Exception):
+    """An Amber deliverable was requested before it was signed."""
+
+
+def signature_state(board: str, task_id: str) -> dict:
+    """Is this task's output releasable?
+
+    Green output needs no signature. Amber output is releasable only
+    after an approval is recorded — a rejection does not release it.
+    """
+    task = _get_task(board, task_id)
+    agent_no = R.agent_of_task(task)
+    agent = R.get_agent(agent_no) if agent_no else None
+    zone = agent["zone"] if agent else None
+
+    con = sqlite3.connect(APPROVALS_DB)
+    con.row_factory = sqlite3.Row
+    row = con.execute("""
+        SELECT signer, decision, signed_at, artifact_hash FROM approvals
+        WHERE task_id = ? ORDER BY signed_at DESC LIMIT 1
+    """, (task_id,)).fetchone()
+    con.close()
+    last = dict(row) if row else None
+
+    if zone != "amber":
+        return {"zone": zone, "approved": True, "reason": None, "last": last}
+
+    if last is None:
+        who = R.owners_of(agent_no, AMBER_SIGNER_ROLE) or ["an assigned signer"]
+        return {"zone": zone, "approved": False, "last": None,
+                "reason": f"Awaiting sign-off by {', '.join(who)}."}
+
+    if last["decision"] != "approved":
+        return {"zone": zone, "approved": False, "last": last,
+                "reason": f"Rejected by {last['signer']}. Not releasable."}
+
+    return {"zone": zone, "approved": True, "reason": None, "last": last}
+
+
 def attachment(user: str, board: str, task_id: str, att_id: str) -> dict:
     """Resolve one deliverable for serving, with authorization.
 
@@ -323,7 +363,29 @@ def attachment(user: str, board: str, task_id: str, att_id: str) -> dict:
     the request, but a serving route that trusts a filesystem path out of
     a database is one bad row away from serving arbitrary files.
     """
-    _authorize(user, board)
+    # A consumer is not on the board. They reach exactly one thing: a
+    # signed deliverable of an agent they are named against. Board access
+    # is checked only for accountable roles.
+    task = _get_task(board, task_id)
+    agent_no = R.agent_of_task(task)
+    if user in R.consumers_of(agent_no or ""):
+        pass
+    else:
+        _authorize(user, board)
+
+    # THE SIGNATURE GATE.
+    # An Amber deliverable is not releasable until a qualified signer has
+    # approved it. Without this the signature is decoration: a content
+    # writer could download an unsigned evidence table and draft from
+    # claims nobody cleared, which is the exact failure the CEO
+    # constraint on agent 03 exists to prevent — just relocated from the
+    # model to the human.
+    #
+    # Green ships unsigned by design, so this only bites where it should.
+    gate = signature_state(board, task_id)
+    if gate["zone"] == "amber" and not gate["approved"]:
+        raise NotSigned(gate["reason"])
+
     con = _connect(board)
     row = con.execute("""
         SELECT id, task_id, filename, stored_path, content_type, size,

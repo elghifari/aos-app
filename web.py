@@ -117,6 +117,8 @@ def view_file(request: Request, board: str, task_id: str, att_id: str,
         att = aos.attachment(user, board, task_id, att_id)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+    except aos.NotSigned as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except (ValueError, FileNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e))
     return templates.TemplateResponse(request, "file.html", {
@@ -135,6 +137,8 @@ def download_file(request: Request, board: str, task_id: str, att_id: str,
     try:
         att = aos.attachment(user, board, task_id, att_id)
     except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except aos.NotSigned as e:
         raise HTTPException(status_code=403, detail=str(e))
     except (ValueError, FileNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e))
