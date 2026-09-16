@@ -26,14 +26,32 @@
   <div class="card">
     <div class="row">
       <div>
-        <strong>{{ f.filename }}</strong>
+        <a class="title" href="/file/{{ board }}/{{ task.id }}/{{ f.id }}?as={{ user }}">{{ f.filename }}</a>
         <div class="muted">{{ (f.size_bytes / 1024) | round(1) }} KB · {{ f.uploaded_by or "—" }}</div>
       </div>
+      <a href="/file/{{ board }}/{{ task.id }}/{{ f.id }}/raw?as={{ user }}"><button class="small">Download</button></a>
     </div>
   </div>
   {% endfor %}
 {% else %}
   <div class="empty">No files attached.</div>
+{% endif %}
+
+<h2>Runs <span class="muted">({{ runs|length }})</span></h2>
+{% if runs %}
+  {% for r in runs %}
+  <div class="run {{ 'failed' if r.error }}">
+    <div class="muted">
+      run {{ r.id }} · {{ r.profile or "—" }} · {{ r.outcome or r.status }}
+      {%- if r.duration_s %} · {{ r.duration_s }}s{% endif %}
+    </div>
+    {% if r.summary %}<div style="margin-top:.25rem">{{ r.summary }}</div>{% endif %}
+    {% if r.error %}<div class="err">{{ r.error }}</div>{% endif %}
+  </div>
+  {% endfor %}
+  <p class="muted">What the worker claims it did. Check it against the file.</p>
+{% else %}
+  <div class="empty">No recorded runs.</div>
 {% endif %}
 
 <h2>Sign</h2>

@@ -45,11 +45,7 @@
   <div class="card {{ 'warn' if t.status == 'blocked' }}">
     <div class="row">
       <div>
-        {% if t.status == 'done' %}
-          <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
-        {% else %}
-          <span class="title">{{ t.title }}</span>
-        {% endif %}
+        <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
         <div class="muted">
           {{ t.status }}
           {%- if t.deliverables %} · {{ t.deliverables }} file{{ "s" if t.deliverables != 1 }}{% endif %}

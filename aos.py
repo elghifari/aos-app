@@ -282,6 +282,79 @@ def unblock(user: str, board: str, task_id: str) -> None:
     _kanban(board, "unblock", task_id)
 
 
+def runs(user: str, board: str, task_id: str) -> list[dict]:
+    """Execution history for one task.
+
+    Hermes records every attempt: which profile ran it, how long, what it
+    concluded, and why it failed. For an Amber output this is part of the
+    provenance a signer should see — what the worker claims it did, next
+    to the file it produced.
+    """
+    _authorize(user, board)
+    con = _connect(board)
+    rows = con.execute("""
+        SELECT id, profile, status, outcome, summary, error,
+               started_at, ended_at, worker_pid
+        FROM task_runs WHERE task_id = ? ORDER BY id
+    """, (task_id,)).fetchall()
+    con.close()
+
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d["started_at"] and d["ended_at"]:
+            d["duration_s"] = d["ended_at"] - d["started_at"]
+        else:
+            d["duration_s"] = None
+        out.append(d)
+    return out
+
+
+def attachment(user: str, board: str, task_id: str, att_id: str) -> dict:
+    """Resolve one deliverable for serving, with authorization.
+
+    The stored path is verified to live under the board's own directory
+    before anything is read. The value comes from Hermes's DB rather than
+    the request, but a serving route that trusts a filesystem path out of
+    a database is one bad row away from serving arbitrary files.
+    """
+    _authorize(user, board)
+    con = _connect(board)
+    row = con.execute("""
+        SELECT id, task_id, filename, stored_path, content_type, size,
+               uploaded_by, created_at
+        FROM task_attachments WHERE id = ? AND task_id = ?
+    """, (att_id, task_id)).fetchone()
+    con.close()
+    if row is None:
+        raise ValueError(f"no such attachment: {att_id}")
+
+    d = dict(row)
+    path = Path(d["stored_path"]).resolve()
+    root = (BOARDS / board).resolve()
+    if not path.is_relative_to(root):
+        raise PermissionError(
+            f"attachment {att_id} resolves outside {board}: {path}")
+    if not path.exists():
+        raise FileNotFoundError(f"file missing on disk: {path}")
+    d["path"] = path
+    return d
+
+
+TEXT_SUFFIXES = {".md", ".txt", ".csv", ".json", ".yaml", ".yml", ".log"}
+
+
+def preview_text(path: Path, limit: int = 20000) -> str | None:
+    """Inline preview for text deliverables. Reviewing a file you cannot
+    see is not review, and most agent output is markdown."""
+    if path.suffix.lower() not in TEXT_SUFFIXES:
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[:limit]
+    except OSError:
+        return None
+
+
 def agent_tasks(user: str, agent_no: str) -> list[dict]:
     """Every task for one agent. Ownership required — an agent is only
     visible to the people who own or countersign it."""

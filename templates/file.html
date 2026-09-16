@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}{{ att.filename }}{% endblock %}
+{% block body %}
+
+<header>
+  <h1><a href="/task/{{ board }}/{{ task_id }}?as={{ user }}"
+         style="text-decoration:none">&larr;</a> {{ att.filename }}</h1>
+  <span class="muted">{{ user }}</span>
+</header>
+
+<div class="card">
+  <dl>
+    <dt>Size</dt><dd>{{ (att.size / 1024) | round(1) }} KB</dd>
+    <dt>Uploaded by</dt><dd>{{ att.uploaded_by or "—" }}</dd>
+    <dt>Type</dt><dd>{{ att.content_type or "unknown" }}</dd>
+  </dl>
+  <div style="margin-top:.7rem">
+    <a href="/file/{{ board }}/{{ task_id }}/{{ att.id }}/raw?as={{ user }}">
+      <button class="small">Download</button></a>
+  </div>
+</div>
+
+{% if text %}
+  <h2>Contents</h2>
+  <pre class="filebody">{{ text }}</pre>
+  <p class="muted">
+    Preview is truncated at 20&nbsp;000 characters. Download the file if you
+    need the whole thing before signing.
+  </p>
+{% else %}
+  <div class="empty" style="margin-top:1rem">
+    No inline preview for this file type. Download it to review.
+  </div>
+{% endif %}
+
+{% endblock %}

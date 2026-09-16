@@ -16,7 +16,8 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import (FileResponse, HTMLResponse,
+                               RedirectResponse)
 from fastapi.templating import Jinja2Templates
 
 import aos
@@ -78,6 +79,7 @@ def task_detail(request: Request, board: str, task_id: str,
         "task": task,
         "agent": agent,
         "files": aos.deliverables(user, board, task_id),
+        "runs": aos.runs(user, board, task_id),
         "can_sign": user in R.owners_of(agent_no, "countersigner")
                     if agent_no else False,
     })
@@ -101,6 +103,42 @@ def agent_detail(request: Request, agent_no: str,
         "owners": R.owners_of(agent_no, "owner"),
         "countersigners": R.owners_of(agent_no, "countersigner"),
     })
+
+
+@app.get("/file/{board}/{task_id}/{att_id}", response_class=HTMLResponse)
+def view_file(request: Request, board: str, task_id: str, att_id: str,
+              as_: str | None = Query(None, alias="as")):
+    """Preview a deliverable. Text renders inline; anything else offers
+    a download."""
+    user = current_user(request, as_)
+    try:
+        att = aos.attachment(user, board, task_id, att_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return templates.TemplateResponse(request, "file.html", {
+        "user": user,
+        "board": board,
+        "task_id": task_id,
+        "att": att,
+        "text": aos.preview_text(att["path"]),
+    })
+
+
+@app.get("/file/{board}/{task_id}/{att_id}/raw")
+def download_file(request: Request, board: str, task_id: str, att_id: str,
+                  as_: str | None = Query(None, alias="as")):
+    user = current_user(request, as_)
+    try:
+        att = aos.attachment(user, board, task_id, att_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return FileResponse(att["path"], filename=att["filename"],
+                        media_type=att["content_type"]
+                        or "application/octet-stream")
 
 
 @app.post("/sign/{board}/{task_id}")
