@@ -98,3 +98,6 @@ tmp/
 
 ~$*
 *.tmp
+
+.aos.pid
+aos.log
