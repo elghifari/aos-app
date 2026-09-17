@@ -38,7 +38,10 @@
   {% endif %}
 </div>
 
-<h2>Work <span class="muted">({{ tasks|length }})</span></h2>
+<h2>Work <span class="muted">({{ tasks|length }})</span>
+  <a href="/new?as={{ user }}&agent={{ agent.agent_no }}" style="float:right">
+    <button class="small">New task</button></a>
+</h2>
 
 {% if tasks %}
   {% for t in tasks %}

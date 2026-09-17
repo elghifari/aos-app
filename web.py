@@ -64,6 +64,37 @@ def home(request: Request, as_: str | None = Query(None, alias="as")):
     })
 
 
+@app.get("/new", response_class=HTMLResponse)
+def new_task_form(request: Request, agent: str | None = Query(None),
+                  as_: str | None = Query(None, alias="as")):
+    user = current_user(request, as_)
+    return templates.TemplateResponse(request, "new.html", {
+        "user": user,
+        "agents": aos.creatable_agents(user),
+        "selected": agent,
+        "error": request.query_params.get("error"),
+    })
+
+
+@app.post("/new")
+def create_task_post(request: Request, agent_no: str = Form(...),
+                     title: str = Form(...), body: str = Form(""),
+                     priority: int = Form(3), user: str = Form(...)):
+    agent = R.get_agent(agent_no)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"unknown agent: {agent_no}")
+    try:
+        task_id = aos.create_task(user, agent["board"], agent_no,
+                                  title, body, priority)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        return RedirectResponse(
+            f"/new?as={user}&agent={agent_no}&error={e}", status_code=303)
+    return RedirectResponse(
+        f"/task/{agent['board']}/{task_id}?as={user}", status_code=303)
+
+
 @app.get("/task/{board}/{task_id}", response_class=HTMLResponse)
 def task_detail(request: Request, board: str, task_id: str,
                 as_: str | None = Query(None, alias="as")):

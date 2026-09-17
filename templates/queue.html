@@ -4,7 +4,10 @@
 
 <header>
   <h1>AOS</h1>
-  <span class="muted">{{ user }} · {{ agents|length }} agents · {{ boards|join(", ") }}</span>
+  <div>
+    <span class="muted">{{ user }} · {{ agents|length }} agents · {{ boards|join(", ") }}</span>
+    <a href="/new?as={{ user }}" style="margin-left:.7rem"><button class="small primary">New task</button></a>
+  </div>
 </header>
 
 {% if env == "development" %}

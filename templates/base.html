@@ -85,6 +85,10 @@
     margin-bottom: .8rem; font-size: .88rem;
   }
   .run.failed { border-left-color: var(--red); }
+  .card.pick { transition: border-color .12s; }
+  .card.pick:hover { border-color: var(--fg); }
+  .card.pick.disabled { opacity: .55; cursor: not-allowed; }
+  .card.pick.disabled:hover { border-color: var(--line); }
   .guard {
     background: var(--amber-bg); border-radius: 6px;
     padding: .6rem .7rem; font-size: .85rem; margin: .8rem 0;

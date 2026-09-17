@@ -110,6 +110,26 @@ def _kanban(board: str, *args: str) -> str:
                           check=True).stdout
 
 
+def creatable_agents(user: str) -> list[dict]:
+    """Agents this person may create work for — the ones they own.
+
+    Countersigners are excluded deliberately. Signing authority is not
+    tasking authority: the Clinical Director countersigns 11 agents but
+    commissions none of them, and letting a signer commission the work
+    they later approve collapses two roles that exist to be separate.
+    """
+    out = []
+    for a in R.agents_for_user(user):
+        if a["ownership"] != "owner" or not a["active"]:
+            continue
+        signers = R.owners_of(a["agent_no"], AMBER_SIGNER_ROLE)
+        out.append({**a,
+                    "signers": signers,
+                    "needs_signature": a["zone"] == "amber",
+                    "blocked": a["zone"] == "amber" and not signers})
+    return out
+
+
 def create_task(user: str, board: str, agent_no: str, title: str, body: str,
                 priority: int = 3) -> str:
     """Create work for an agent.
@@ -126,6 +146,18 @@ def create_task(user: str, board: str, agent_no: str, title: str, body: str,
     if agent["board"] != board:
         raise ValueError(
             f"agent {agent_no} belongs to {agent['board']}, not {board}")
+    if not agent["active"]:
+        raise ValueError(f"agent {agent_no} is not active")
+    if user not in R.owners_of(agent_no, "owner"):
+        raise PermissionError(f"{user} does not own agent {agent_no}")
+
+    # Refuse to commission Amber work that nobody can sign. The output
+    # would complete, fail the release gate, and sit in a queue with no
+    # named signer — work done that can never ship.
+    if agent["zone"] == "amber" and not R.owners_of(agent_no, AMBER_SIGNER_ROLE):
+        raise ValueError(
+            f"agent {agent_no} is amber but has no assigned signer. "
+            f"Assign one before commissioning work that cannot be released.")
 
     out = _kanban(board, "create", title, "--body", body,
                   "--priority", str(priority),
