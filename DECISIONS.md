@@ -55,9 +55,21 @@ half of the original constraint and it still applies. Mitigation: claim-level
 citation markers (`[C3]`) so the reviewer checks a mapping rather than reading
 for tone.
 
-**Notified:** Dr. Suzy Yusna Dewi — **NOT YET TOLD.** She signs 03b output.
-She should not discover this by noticing different-looking drafts in her queue.
-Blocking: do not flip the registry until she knows.
+**Notified:** Dr. Suzy Yusna Dewi — informed. Registry flipped 2026-09-16.
+
+**The counterfactual matters, and it was not what the constraint assumed.**
+The clinicians' own first proposal was for the marketing team to research and
+write these articles themselves. The original constraint was written against
+"an agent researches and writes in one pass" — but the real alternative on the
+table was a non-clinical marketer researching adolescent depression treatment
+by search engine, juggling it alongside content production, on a topic they do
+not know.
+
+Measured against that, a drafter with no internet access that can only use
+claims a clinician has already signed is the **stricter** option. The evidence
+pass is done by an agent that must show its sources; the claims are cleared by
+a clinician; the drafter cannot reach past them. The human alternative had no
+gate at all.
 
 **Reversal:** set `03b` `delivery_box` back to `seat` in `registry.db` and
 delete the `p1-drafting` profile. No data migration.
