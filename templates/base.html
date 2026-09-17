@@ -107,6 +107,35 @@
   th { font-size:.75rem; color:var(--muted); font-weight:600; }
   tr:last-child td { border-bottom:none; }
   td.over { color:var(--red); font-weight:600; }
+  .card.family { border-left: 3px solid var(--muted-line, #cbd5e1); }
+  .stages { margin-top:.55rem; display:flex; align-items:center; gap:.4rem; flex-wrap:wrap; }
+  .stage {
+    font-size:.78rem; font-weight:600; padding:.2rem .5rem;
+    border-radius:4px; background:#f1f5f9; color:#334155;
+  }
+  .stage.amber { background:var(--amber-bg); color:var(--amber); }
+  .stage.green { background:#f0fdf4; color:var(--green); }
+  .arrow { color:var(--muted); font-size:.85rem; }
+  .gate-chip {
+    font-size:.68rem; font-weight:700; letter-spacing:.04em;
+    padding:.18rem .45rem; border-radius:4px;
+    background:var(--fg); color:#fff;
+  }
+  .gate {
+    margin:.15rem 0 .55rem 1.1rem; padding:.7rem .85rem;
+    border-left:3px solid var(--fg); background:var(--card);
+    border-radius:0 8px 8px 0; font-size:.88rem;
+  }
+  .gate-label {
+    font-size:.68rem; font-weight:700; letter-spacing:.06em;
+    color:var(--fg); margin-bottom:.3rem;
+  }
+  .gate-why {
+    margin-top:.45rem; font-size:.8rem; color:var(--muted);
+    font-style:italic;
+  }
+  .card.amber-edge { border-left:3px solid var(--amber); }
+  .card.green-edge { border-left:3px solid var(--green); }
   .guard {
     background: var(--amber-bg); border-radius: 6px;
     padding: .6rem .7rem; font-size: .85rem; margin: .8rem 0;

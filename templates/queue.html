@@ -113,7 +113,27 @@
 
 {# ── Agents owned ─────────────────────────────────────────── #}
 <h2>Your agents</h2>
-{% for a in agents %}
+{% for e in grouped %}
+{% if e.kind == "family" %}
+<div class="card family">
+  <div class="row">
+    <div>
+      <a class="title" href="/family/{{ e.family_no }}?as={{ user }}">
+        <strong>{{ e.family_no }}</strong> {{ e.meta.name }}</a>
+      <span class="muted">· {{ e.stages|length }} stages with a human gate</span>
+    </div>
+    <span class="muted">{{ e.board }}</span>
+  </div>
+  <div class="stages">
+    {% for s in e.stages %}
+      <span class="stage {{ s.zone }}">{{ s.agent_no }}</span>
+      {% if e.meta.gate_after == s.agent_no %}<span class="gate-chip">gate</span>{% endif %}
+      {% if not loop.last %}<span class="arrow">&rarr;</span>{% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% else %}
+{% set a = e.agent %}
 <div class="card">
   <div class="row">
     <div>
@@ -126,6 +146,7 @@
   </div>
   <div class="guard">{{ a.guardrail }}</div>
 </div>
+{% endif %}
 {% endfor %}
 
 {% endblock %}

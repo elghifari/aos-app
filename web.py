@@ -55,6 +55,7 @@ def home(request: Request, as_: str | None = Query(None, alias="as")):
     return templates.TemplateResponse(request, "queue.html", {
         "user": user,
         "agents": agents,
+        "grouped": R.group_by_family(agents),
         "boards": aos.boards_for(user),
         "review": aos.unsigned_amber(user),
         "oversight": [t for t in aos.unsigned_amber(user, mine_only=False)
@@ -146,6 +147,30 @@ def agent_detail(request: Request, agent_no: str,
         "owners": R.owners_of(agent_no, "owner"),
         "countersigners": R.owners_of(agent_no, "countersigner"),
     })
+
+
+@app.get("/family/{family_no}", response_class=HTMLResponse)
+def family_detail(request: Request, family_no: str,
+                  as_: str | None = Query(None, alias="as")):
+    """A composite agent as a pipeline: stages, and the human gate between
+    them. The gate is the control — showing stages as unrelated agents
+    hides it."""
+    user = current_user(request, as_)
+    fam = R.get_family(family_no)
+    if fam is None:
+        raise HTTPException(status_code=404, detail=f"unknown family: {family_no}")
+    try:
+        aos._authorize(user, fam["board"])
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    stages = []
+    for st in fam["stages"]:
+        stages.append({**st,
+                       "tasks": aos.agent_tasks(user, st["agent_no"]),
+                       "owners": R.owners_of(st["agent_no"], "owner"),
+                       "signers": R.owners_of(st["agent_no"], "countersigner")})
+    return templates.TemplateResponse(request, "family.html", {
+        "user": user, "fam": fam, "stages": stages})
 
 
 @app.get("/file/{board}/{task_id}/{att_id}", response_class=HTMLResponse)

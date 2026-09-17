@@ -176,3 +176,86 @@ def agents_on_board(board: str) -> list[dict]:
         "SELECT * FROM agents WHERE board = ? ORDER BY agent_no", (board,)).fetchall()
     con.close()
     return [dict(r) for r in rows]
+
+
+# Composite agents. The playbook numbers them as ONE role and decomposes them
+# into stages; showing the stages as unrelated agents hides the thing that
+# matters most — the human gate between them, which IS the control.
+#
+# gate_after: the stage number after which a human must act before the next
+# stage may begin. None means the stages are independent, not sequential.
+FAMILIES = {
+    "03": {
+        "name": "Clinical Content",
+        "sequential": True,
+        "gate_after": "03a",
+        "gate": ("A clinician marks which claims are supportable. That becomes "
+                 "the APPROVED CLAIM SET, and it is the only thing the drafter "
+                 "may use."),
+        "why": ("The agent must not research and write in one pass: claims "
+                "generated alongside their own sources invite post-hoc "
+                "justification, and a finished draft with citations attached is "
+                "the hardest artifact for a reviewer to catch errors in."),
+    },
+    "07": {
+        "name": "Enquiry Triage",
+        "sequential": True,
+        "gate_after": "07a",
+        "gate": ("The risk-language gate runs BEFORE any model sees the message. "
+                 "If it trips, the conversation leaves automation permanently "
+                 "and a human takes it."),
+        "why": ("A false positive costs a Care Navigator two minutes. A false "
+                "negative is Red Zone item 3. The gate is tuned for recall, "
+                "fails closed, and is irreversible per conversation."),
+    },
+    "11": {
+        "name": "Recruitment",
+        "sequential": True,
+        "gate_after": "11a",
+        "gate": ("Criteria are PUBLISHED before any candidate exists. Nothing "
+                 "downstream may introduce a criterion that was not published."),
+        "why": ("Extraction and flagging never rank, never remove a row, and "
+                "never infer to fill a blank. The hiring decision stays human, "
+                "and candidate data is personal data under the PDP Law."),
+    },
+}
+
+
+def family_of(agent_no: str) -> str | None:
+    """'03a' -> '03'. Returns None for standalone agents."""
+    base = agent_no.rstrip("abcdefg")
+    return base if base in FAMILIES and base != agent_no else None
+
+
+def get_family(family_no: str) -> dict | None:
+    meta = FAMILIES.get(family_no)
+    if meta is None:
+        return None
+    con = sqlite3.connect(REGISTRY_DB)
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        "SELECT * FROM agents WHERE agent_no LIKE ? AND active = 1 "
+        "ORDER BY agent_no", (family_no + "%",)).fetchall()
+    con.close()
+    stages = [dict(r) for r in rows]
+    if not stages:
+        return None
+    return {**meta, "family_no": family_no, "stages": stages,
+            "board": stages[0]["board"]}
+
+
+def group_by_family(agents: list[dict]) -> list[dict]:
+    """Collapse a flat agent list into families plus standalone agents,
+    preserving order. Each family entry carries its stages."""
+    out, seen = [], set()
+    for a in agents:
+        fam = family_of(a["agent_no"])
+        if fam is None:
+            out.append({"kind": "agent", "agent": a})
+        elif fam not in seen:
+            seen.add(fam)
+            stages = [x for x in agents if family_of(x["agent_no"]) == fam]
+            out.append({"kind": "family", "family_no": fam,
+                        "meta": FAMILIES[fam], "stages": stages,
+                        "board": stages[0]["board"]})
+    return out

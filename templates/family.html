@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}{{ fam.family_no }} — {{ fam.name }}{% endblock %}
+{% block body %}
+
+<header>
+  <h1><a href="/?as={{ user }}" style="text-decoration:none">&larr;</a>
+    {{ fam.family_no }} · {{ fam.name }}</h1>
+  <span class="muted">{{ user }}</span>
+</header>
+
+<p class="muted" style="margin:.2rem 0 1rem">
+  One role in the playbook, split into stages with a human gate between them.
+  The split is the control, not an implementation detail.
+</p>
+
+{% for s in stages %}
+
+<div class="card {{ s.zone }}-edge">
+  <div class="row">
+    <div>
+      <a class="title" href="/agent/{{ s.agent_no }}?as={{ user }}">
+        <strong>{{ s.agent_no }}</strong> {{ s.name }}</a>
+      <span class="tag {{ s.zone }}">{{ s.zone }}</span>
+      {% if not s.is_agentic %}
+        <span class="muted">· {{ "n8n pipeline" if s.delivery_box == "n8n" else "a person" }}</span>
+      {% endif %}
+    </div>
+    <span class="muted">{{ s.tasks|length }} task{{ "s" if s.tasks|length != 1 }}</span>
+  </div>
+
+  <div class="guard">{{ s.guardrail }}</div>
+
+  <div class="muted" style="font-size:.8rem">
+    {% if s.profile %}runs on <code>{{ s.profile }}</code>{% else %}no worker{% endif %}
+    {%- if s.owners %} · owned by {{ s.owners | join(", ") }}{% endif %}
+    {%- if s.signers %} · signed by {{ s.signers | join(", ") }}{% endif %}
+  </div>
+</div>
+
+{% if fam.sequential and fam.gate_after == s.agent_no %}
+<div class="gate">
+  <div class="gate-label">HUMAN GATE</div>
+  <div>{{ fam.gate }}</div>
+  <div class="gate-why">{{ fam.why }}</div>
+</div>
+{% endif %}
+
+{% endfor %}
+
+<h2>Work across all stages</h2>
+{% set ns = namespace(any=false) %}
+{% for s in stages %}
+  {% for t in s.tasks %}
+  {% set ns.any = true %}
+  <div class="card {{ 'warn' if t.status == 'blocked' }}">
+    <div class="row">
+      <div>
+        <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+        <div class="muted">{{ s.agent_no }} · {{ t.status }}</div>
+      </div>
+      <div style="text-align:right; white-space:nowrap">
+        {% if s.zone == "amber" and t.status == "done" %}
+          {% if t.signed %}
+            <span class="tag" style="background:#dcfce7;color:#15803d">signed</span>
+          {% else %}
+            <span class="tag amber">unsigned</span>
+          {% endif %}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+{% endfor %}
+{% if not ns.any %}
+  <div class="empty">No work yet.</div>
+{% endif %}
+
+{% endblock %}
