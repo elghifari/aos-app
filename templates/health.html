@@ -87,7 +87,7 @@
 <div class="card {{ 'warn' if t.age_days > h.sla_days }}">
   <div class="row">
     <div>
-      <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+      <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}&back=/queue">{{ t.title }}</a>
       <div class="muted">
         <a href="/agent/{{ t.agent_no }}?as={{ user }}">{{ t.agent_name }}</a> · {{ t.board }}
       </div>

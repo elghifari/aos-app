@@ -28,7 +28,7 @@
   <div class="card amber">
     <div class="row">
       <div>
-        <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+        <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}&back=/">{{ t.title }}</a>
         <span class="tag amber">amber</span>
         <div class="muted"><a href="/agent/{{ t.agent_no }}?as={{ user }}">{{ t.agent_name }}</a> · {{ t.board }}
           {%- if t.deliverables %} · {{ t.deliverables }} file{{ "s" if t.deliverables != 1 }}{% endif %}</div>
@@ -55,7 +55,7 @@
 <div class="card">
   <div class="row">
     <div>
-      <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+      <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}&back=/">{{ t.title }}</a>
       <span class="tag amber">amber</span>
       <div class="muted"><a href="/agent/{{ t.agent_no }}?as={{ user }}">{{ t.agent_name }}</a>
         · {{ t.board }} · not yours to sign</div>

@@ -3,7 +3,7 @@
 {% block body %}
 
 <header>
-  <h1><a href="/?as={{ user }}" style="text-decoration:none">&larr;</a> Review</h1>
+  <h1><a href="{{ back }}" style="text-decoration:none">&larr;</a> Review</h1>
   <span class="muted">{{ user }}</span>
 </header>
 
@@ -67,6 +67,7 @@
   </div>
 {% else %}
   <form method="post" action="/sign/{{ board }}/{{ task.id }}">
+    <input type="hidden" name="back" value="{{ back }}">
     <input type="hidden" name="user" value="{{ user }}">
     <input type="hidden" name="artifact" value="{{ files[0].stored_path }}">
     <p class="muted" style="margin:.2rem 0 .6rem">

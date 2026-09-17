@@ -13,7 +13,9 @@ REFUSES to start outside AOS_ENV=development — a stubbed identity must
 never be one environment variable away from production.
 """
 import os
+import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import (FileResponse, HTMLResponse,
@@ -28,6 +30,34 @@ BASE = Path(__file__).parent
 
 app = FastAPI(title="AOS", docs_url=None, redoc_url=None)
 templates = Jinja2Templates(directory=str(BASE / "templates"))
+
+
+
+# Pages are reached from several places: the queue, an agent, a family, queue
+# health. Sending everyone "home" loses the thread — you came from agent 10 to
+# read one of its tasks, and back should return you to agent 10.
+#
+# Derived from Referer, but never trusted raw: an attacker-controlled Referer
+# turned into a link is an open redirect. Only same-origin paths matching our
+# own routes are accepted, and anything else falls back to the queue.
+_BACK_OK = re.compile(r"^/(agent/[\w-]+|family/\d+|queue|task/[\w-]+/[\w-]+)?$")
+
+
+def back_link(request: Request, user: str, explicit: str | None = None) -> str:
+    """Where the back arrow should point. explicit wins (it survives a POST),
+    then Referer, then the queue."""
+    candidate = explicit
+    if not candidate:
+        ref = request.headers.get("referer", "")
+        if ref:
+            p = urlparse(ref)
+            same_origin = (p.netloc == request.url.netloc)
+            if same_origin and _BACK_OK.match(p.path):
+                candidate = p.path
+    if not candidate or not _BACK_OK.match(candidate):
+        return f"/?as={user}"
+    sep = "&" if "?" in candidate else "?"
+    return f"{candidate}{sep}as={user}"
 
 
 def current_user(request: Request, as_: str | None = None) -> str:
@@ -115,7 +145,8 @@ def create_task_post(request: Request, agent_no: str = Form(...),
 
 @app.get("/task/{board}/{task_id}", response_class=HTMLResponse)
 def task_detail(request: Request, board: str, task_id: str,
-                as_: str | None = Query(None, alias="as")):
+                as_: str | None = Query(None, alias="as"),
+                back: str | None = Query(None)):
     user = current_user(request, as_)
     try:
         task = aos._get_task(board, task_id)
@@ -125,6 +156,7 @@ def task_detail(request: Request, board: str, task_id: str,
     agent_no = R.agent_of_task(task)
     agent = R.get_agent(agent_no) if agent_no else None
     return templates.TemplateResponse(request, "task.html", {
+        "back": back_link(request, user, back),
         "user": user,
         "board": board,
         "task": task,
@@ -195,6 +227,7 @@ def view_file(request: Request, board: str, task_id: str, att_id: str,
     except (ValueError, FileNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e))
     return templates.TemplateResponse(request, "file.html", {
+        "back": back_link(request, user, back),
         "user": user,
         "board": board,
         "task_id": task_id,
@@ -223,7 +256,8 @@ def download_file(request: Request, board: str, task_id: str, att_id: str,
 @app.post("/sign/{board}/{task_id}")
 def do_sign(board: str, task_id: str,
             decision: str = Form(...), note: str = Form(""),
-            artifact: str = Form(...), user: str = Form(...)):
+            artifact: str = Form(...), user: str = Form(...),
+            back: str = Form("")):
     agent_no = R.agent_of_task(aos._get_task(board, task_id))
     agent = R.get_agent(agent_no)
     try:
@@ -232,7 +266,11 @@ def do_sign(board: str, task_id: str,
                  artifact_path=artifact, note=note)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
-    return RedirectResponse(f"/?as={user}", status_code=303)
+    # Back to where the reviewer was working. Signing one of five queued
+    # items should not eject them to the top of the app.
+    dest = back if back and _BACK_OK.match(back) else "/"
+    sep = "&" if "?" in dest else "?"
+    return RedirectResponse(f"{dest}{sep}as={user}", status_code=303)
 
 
 @app.post("/unblock/{board}/{task_id}")
@@ -241,4 +279,8 @@ def do_unblock(board: str, task_id: str, user: str = Form(...)):
         aos.unblock(user, board, task_id)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
-    return RedirectResponse(f"/?as={user}", status_code=303)
+    # Back to where the reviewer was working. Signing one of five queued
+    # items should not eject them to the top of the app.
+    dest = back if back and _BACK_OK.match(back) else "/"
+    sep = "&" if "?" in dest else "?"
+    return RedirectResponse(f"{dest}{sep}as={user}", status_code=303)

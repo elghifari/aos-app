@@ -55,7 +55,7 @@
   <div class="card {{ 'warn' if t.status == 'blocked' }}">
     <div class="row">
       <div>
-        <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+        <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}&back=/family/{{ fam.family_no }}">{{ t.title }}</a>
         <div class="muted">{{ s.agent_no }} · {{ t.status }}</div>
       </div>
       <div style="text-align:right; white-space:nowrap">
