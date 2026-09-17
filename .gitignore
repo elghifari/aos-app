@@ -95,3 +95,6 @@ scratch/
 tmp/
 *_demo.*
 *_test_output.*
+
+~$*
+*.tmp
