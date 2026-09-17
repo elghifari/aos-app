@@ -1,9 +1,13 @@
 {% extends "base.html" %}
-{% block title %}New task{% endblock %}
+{% block title %}{% if focus %}New task — {{ focus.agent_no }}{% else %}New task{% endif %}{% endblock %}
 {% block body %}
 
 <header>
-  <h1><a href="/?as={{ user }}" style="text-decoration:none">&larr;</a> New task</h1>
+  <h1>
+    <a href="{% if focus %}/agent/{{ focus.agent_no }}?as={{ user }}{% else %}/?as={{ user }}{% endif %}"
+       style="text-decoration:none">&larr;</a>
+    {% if focus %}New task — {{ focus.agent_no }} {{ focus.name }}{% else %}New task{% endif %}
+  </h1>
   <span class="muted">{{ user }}</span>
 </header>
 
@@ -16,8 +20,53 @@
 
 {% if not agents %}
   <div class="empty">You do not own any agents, so there is nothing to commission.</div>
-{% else %}
 
+{% elif focus %}
+{# ── Scoped: came from an agent page ─────────────────────── #}
+<form method="post" action="/new">
+  <input type="hidden" name="user" value="{{ user }}">
+  <input type="hidden" name="agent_no" value="{{ focus.agent_no }}">
+
+  <div class="card {{ focus.zone }}-edge">
+    <div class="row">
+      <div>
+        <strong>{{ focus.agent_no }}</strong> {{ focus.name }}
+        <span class="tag {{ focus.zone }}">{{ focus.zone }}</span>
+        {% if not focus.is_agentic %}
+          <span class="muted">· no worker — you complete this yourself</span>
+        {% endif %}
+      </div>
+      <span class="muted">{{ focus.board }}</span>
+    </div>
+    <div class="guard">{{ focus.guardrail }}</div>
+    {% if focus.blocked %}
+      <div class="err">Amber with no assigned signer. Work would complete and
+        never be releasable. Assign a signer first.</div>
+    {% elif focus.needs_signature %}
+      <div class="muted" style="font-size:.82rem">
+        Output is not releasable until signed by {{ focus.signers | join(", ") }}.
+      </div>
+    {% endif %}
+    {% if family %}
+      <div class="muted" style="font-size:.8rem; margin-top:.4rem">
+        Stage of <a href="/family/{{ family }}?as={{ user }}">{{ family }}</a> —
+        check the gate before commissioning a later stage.
+      </div>
+    {% endif %}
+  </div>
+
+  {% include "_taskfields.html" %}
+
+  <div style="margin-top:1.2rem">
+    <button class="primary" {{ "disabled" if focus.blocked }}>Create</button>
+    <a href="/agent/{{ focus.agent_no }}?as={{ user }}"><button type="button">Cancel</button></a>
+    <a href="/new?as={{ user }}" class="muted" style="margin-left:.6rem; font-size:.85rem">
+      choose a different agent</a>
+  </div>
+</form>
+
+{% else %}
+{# ── Unscoped: came from the home page ───────────────────── #}
 <form method="post" action="/new">
   <input type="hidden" name="user" value="{{ user }}">
 
@@ -28,7 +77,7 @@
       <div>
         <input type="radio" name="agent_no" value="{{ a.agent_no }}"
                {% if selected == a.agent_no %}checked{% endif %}
-               {% if a.blocked %}disabled{% endif %}>
+               {% if a.blocked %}disabled{% endif %} required>
         <strong>{{ a.agent_no }}</strong> {{ a.name }}
         <span class="tag {{ a.zone }}">{{ a.zone }}</span>
         {% if not a.is_agentic %}
@@ -37,46 +86,24 @@
       </div>
       <span class="muted">{{ a.board }}</span>
     </div>
-
     <div class="guard">{{ a.guardrail }}</div>
-
     {% if a.blocked %}
-      <div class="err">Amber with no assigned signer. Work would complete and
-        never be releasable. Assign a signer first.</div>
+      <div class="err">Amber with no assigned signer — work could not be released.</div>
     {% elif a.needs_signature %}
       <div class="muted" style="font-size:.82rem">
-        Output is not releasable until signed by {{ a.signers | join(", ") }}.
+        Not releasable until signed by {{ a.signers | join(", ") }}.
       </div>
     {% endif %}
   </label>
   {% endfor %}
 
-  <h2>What to do</h2>
-  <input type="text" name="title" required maxlength="120"
-         placeholder="One line — what should exist when this is done">
-
-  <p class="muted" style="margin:.8rem 0 .3rem">
-    The brief. For an Amber agent this is also what the signer reads to judge
-    whether the output answers the ask — say what the constraint is, not just
-    the topic.
-  </p>
-  <textarea name="body" rows="7" placeholder="Scope, sources, what must not be claimed, where the output goes"></textarea>
-
-  <h2>Priority</h2>
-  <select name="priority" style="font:inherit; padding:.45rem; border:1px solid var(--line); border-radius:6px">
-    <option value="1">1 — urgent</option>
-    <option value="2">2</option>
-    <option value="3" selected>3 — normal</option>
-    <option value="4">4</option>
-    <option value="5">5 — whenever</option>
-  </select>
+  {% include "_taskfields.html" %}
 
   <div style="margin-top:1.2rem">
     <button class="primary">Create</button>
     <a href="/?as={{ user }}"><button type="button">Cancel</button></a>
   </div>
 </form>
-
 {% endif %}
 
 {% endblock %}

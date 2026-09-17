@@ -79,10 +79,17 @@ def queue_health(request: Request, as_: str | None = Query(None, alias="as")):
 def new_task_form(request: Request, agent: str | None = Query(None),
                   as_: str | None = Query(None, alias="as")):
     user = current_user(request, as_)
+    creatable = aos.creatable_agents(user)
+    # Arriving from an agent page scopes the form to that agent. The user
+    # already chose; re-presenting the full list makes them choose twice
+    # and buries the choice they made in a radio list.
+    focus = next((a for a in creatable if a["agent_no"] == agent), None)
     return templates.TemplateResponse(request, "new.html", {
         "user": user,
-        "agents": aos.creatable_agents(user),
+        "agents": creatable,
         "selected": agent,
+        "focus": focus,
+        "family": R.family_of(agent) if agent else None,
         "error": request.query_params.get("error"),
     })
 
