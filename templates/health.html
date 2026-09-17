@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Queue health{% endblock %}
+{% block body %}
+
+<header>
+  <h1><a href="/?as={{ user }}" style="text-decoration:none">&larr;</a> Queue health</h1>
+  <span class="muted">{{ user }}</span>
+</header>
+
+<div class="stats">
+  <div class="stat">
+    <div class="n">{{ h.total_waiting }}</div>
+    <div class="l">waiting</div>
+  </div>
+  <div class="stat {{ 'bad' if h.oldest_days > h.sla_days }}">
+    <div class="n">{{ h.oldest_days }}d</div>
+    <div class="l">oldest item</div>
+  </div>
+  <div class="stat {{ 'bad' if h.breaching }}">
+    <div class="n">{{ h.breaching }}</div>
+    <div class="l">over {{ h.sla_days }}-day target</div>
+  </div>
+</div>
+
+{% if h.breaching %}
+<div class="card warn">
+  <strong>{{ h.breaching }} item{{ "s" if h.breaching != 1 }} past the review-queue target.</strong>
+  <div class="muted" style="margin-top:.25rem">
+    The playbook metric is the <em>oldest</em> item, not the average — a queue
+    with one 14-day item is breaching even if everything else is same-day.
+  </div>
+</div>
+{% endif %}
+
+<h2>By signer</h2>
+{% if h.by_signer %}
+<table>
+  <tr><th>Signer</th><th>Waiting</th><th>Oldest</th><th>Over target</th></tr>
+  {% for r in h.by_signer %}
+  <tr>
+    <td>{{ r.signer }}</td>
+    <td>{{ r.waiting }}</td>
+    <td class="{{ 'over' if r.oldest_days > h.sla_days }}">{{ r.oldest_days }}d</td>
+    <td class="{{ 'over' if r.breaching }}">{{ r.breaching or "—" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">Nothing waiting.</div>
+{% endif %}
+
+<h2>By agent</h2>
+{% if h.by_agent %}
+<table>
+  <tr><th>Agent</th><th></th><th>Waiting</th><th>Oldest</th></tr>
+  {% for r in h.by_agent %}
+  <tr>
+    <td><a href="/agent/{{ r.agent_no }}?as={{ user }}">{{ r.agent_no }}</a></td>
+    <td class="muted">{{ r.agent_name }}</td>
+    <td>{{ r.waiting }}</td>
+    <td class="{{ 'over' if r.oldest_days > h.sla_days }}">{{ r.oldest_days }}d</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>Expected load</h2>
+<p class="muted" style="margin:.2rem 0 .7rem">
+  What the roster implies per week, from each agent's cadence. An estimate, not
+  a measurement — but it is the number worth having before deciding the review
+  gate is too strict. A signer with four items a week is not a bottleneck; the
+  same signer with forty is, and no amount of discipline fixes that.
+</p>
+<table>
+  <tr><th>Signer</th><th>Est. items/week</th><th>From</th></tr>
+  {% for r in load %}
+  <tr>
+    <td>{{ r.signer }}</td>
+    <td><strong>~{{ r.per_week }}</strong></td>
+    <td class="muted">{{ r.agents | join(", ") }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+<h2>Oldest first</h2>
+{% for t in h["items"][:15] %}
+<div class="card {{ 'warn' if t.age_days > h.sla_days }}">
+  <div class="row">
+    <div>
+      <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+      <div class="muted">
+        <a href="/agent/{{ t.agent_no }}?as={{ user }}">{{ t.agent_name }}</a> · {{ t.board }}
+      </div>
+    </div>
+    <div class="age {{ 'over' if t.age_days > h.sla_days }}">{{ t.age_days }}d</div>
+  </div>
+</div>
+{% endfor %}
+
+{% endblock %}

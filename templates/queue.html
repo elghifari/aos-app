@@ -6,7 +6,8 @@
   <h1>AOS</h1>
   <div>
     <span class="muted">{{ user }} · {{ agents|length }} agents · {{ boards|join(", ") }}</span>
-    <a href="/new?as={{ user }}" style="margin-left:.7rem"><button class="small primary">New task</button></a>
+    <a href="/queue?as={{ user }}" style="margin-left:.7rem"><button class="small">Queue health</button></a>
+    <a href="/new?as={{ user }}"><button class="small primary">New task</button></a>
   </div>
 </header>
 

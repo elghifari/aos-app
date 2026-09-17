@@ -263,6 +263,88 @@ def sign(board: str, task_id: str, signer: str, signer_role: str,
             "decision": decision, "artifact_hash": digest, "signed_at": now}
 
 
+
+# Playbook target: the oldest unsigned Amber item stays under 10 working days.
+REVIEW_SLA_DAYS = 10
+
+
+def queue_health(user: str) -> dict:
+    """Aggregate state of the review queue, per signer and per agent.
+
+    Individual rows already carry an age. This exists because the shape is
+    invisible from them: nobody can see how many items are waiting, whose
+    they are, or which agents generate the backlog.
+
+    That matters for a live argument at Talenta — whether the review gate
+    is too strict for a foundation this size, or simply unstaffed. Those
+    look identical from inside a slow queue and are opposite problems.
+    A signer with four items a week is not a bottleneck; the same signer
+    with forty is, and no amount of discipline fixes it.
+
+    Reports oldest-first, since the SLA is on the oldest item, not the mean.
+    """
+    items = unsigned_amber(user, mine_only=False)
+
+    by_signer: dict[str, list] = {}
+    by_agent: dict[str, list] = {}
+    for t in items:
+        for s in R.owners_of(t["agent_no"], AMBER_SIGNER_ROLE) or ["(unassigned)"]:
+            by_signer.setdefault(s, []).append(t)
+        by_agent.setdefault(t["agent_no"], []).append(t)
+
+    def summarise(group: dict, label_key: str) -> list[dict]:
+        out = []
+        for key, ts in group.items():
+            ages = [t["age_days"] for t in ts]
+            out.append({
+                label_key: key,
+                "waiting": len(ts),
+                "oldest_days": max(ages),
+                "breaching": sum(1 for a in ages if a > REVIEW_SLA_DAYS),
+                "agent_name": ts[0].get("agent_name"),
+                "board": ts[0].get("board"),
+            })
+        return sorted(out, key=lambda r: -r["oldest_days"])
+
+    ages = [t["age_days"] for t in items]
+    return {
+        "total_waiting": len(items),
+        "oldest_days": max(ages) if ages else 0,
+        "breaching": sum(1 for a in ages if a > REVIEW_SLA_DAYS),
+        "sla_days": REVIEW_SLA_DAYS,
+        "by_signer": summarise(by_signer, "signer"),
+        "by_agent": summarise(by_agent, "agent_no"),
+        "items": items,
+    }
+
+
+def signing_load(user: str) -> list[dict]:
+    """Expected weekly signing load per signer, from agent cadences.
+
+    An estimate, not a measurement — it says what the roster implies, which
+    is the number worth having before deciding the gate is too strict. If
+    the implied load is small, a slow queue is an attention problem, not a
+    design problem.
+    """
+    PER_WEEK = {"continuous": 5.0, "weekly": 1.0, "per piece": 1.0,
+                "per vacancy": 0.5, "batch": 0.5, "ongoing": 0.5,
+                "monthly": 0.25, "per cycle": 0.25, "per project": 0.25,
+                "quarterly": 0.08}
+    load: dict[str, dict] = {}
+    for board in boards_for(user):
+        for a in R.agents_on_board(board):
+            if a["zone"] != "amber" or not a["active"]:
+                continue
+            est = PER_WEEK.get(a["cadence"] or "", 0.5)
+            for s in R.owners_of(a["agent_no"], AMBER_SIGNER_ROLE) or ["(unassigned)"]:
+                e = load.setdefault(s, {"signer": s, "per_week": 0.0, "agents": []})
+                e["per_week"] += est
+                e["agents"].append(f"{a['agent_no']} ({a['cadence'] or 'ad hoc'})")
+    for e in load.values():
+        e["per_week"] = round(e["per_week"], 1)
+    return sorted(load.values(), key=lambda r: -r["per_week"])
+
+
 def blocked_tasks(user: str) -> list[dict]:
     """Work that stopped and will not restart by itself.
 

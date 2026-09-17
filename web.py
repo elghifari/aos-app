@@ -64,6 +64,16 @@ def home(request: Request, as_: str | None = Query(None, alias="as")):
     })
 
 
+@app.get("/queue", response_class=HTMLResponse)
+def queue_health(request: Request, as_: str | None = Query(None, alias="as")):
+    user = current_user(request, as_)
+    return templates.TemplateResponse(request, "health.html", {
+        "user": user,
+        "h": aos.queue_health(user),
+        "load": aos.signing_load(user),
+    })
+
+
 @app.get("/new", response_class=HTMLResponse)
 def new_task_form(request: Request, agent: str | None = Query(None),
                   as_: str | None = Query(None, alias="as")):

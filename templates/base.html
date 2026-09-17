@@ -89,6 +89,24 @@
   .card.pick:hover { border-color: var(--fg); }
   .card.pick.disabled { opacity: .55; cursor: not-allowed; }
   .card.pick.disabled:hover { border-color: var(--line); }
+  .stats { display:flex; gap:.6rem; margin:1rem 0 .5rem; flex-wrap:wrap; }
+  .stat {
+    background: var(--card); border:1px solid var(--line); border-radius:8px;
+    padding:.7rem .95rem; min-width:112px;
+  }
+  .stat .n { font-size:1.5rem; font-weight:600; line-height:1.1; }
+  .stat .l { font-size:.75rem; color:var(--muted); margin-top:.15rem; }
+  .stat.bad { border-color:#fca5a5; background:var(--red-bg); }
+  .stat.bad .n { color:var(--red); }
+  table {
+    width:100%; border-collapse:collapse; background:var(--card);
+    border:1px solid var(--line); border-radius:8px; overflow:hidden;
+    font-size:.88rem; margin-bottom:.6rem;
+  }
+  th, td { text-align:left; padding:.5rem .7rem; border-bottom:1px solid var(--line); }
+  th { font-size:.75rem; color:var(--muted); font-weight:600; }
+  tr:last-child td { border-bottom:none; }
+  td.over { color:var(--red); font-weight:600; }
   .guard {
     background: var(--amber-bg); border-radius: 6px;
     padding: .6rem .7rem; font-size: .85rem; margin: .8rem 0;

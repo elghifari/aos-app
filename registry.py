@@ -167,3 +167,12 @@ def agents_readable_by(user_id: str) -> list[dict]:
     """, (user_id,)).fetchall()
     con.close()
     return [dict(r) for r in rows]
+
+
+def agents_on_board(board: str) -> list[dict]:
+    con = sqlite3.connect(REGISTRY_DB)
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        "SELECT * FROM agents WHERE board = ? ORDER BY agent_no", (board,)).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
