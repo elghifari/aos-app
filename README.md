@@ -97,15 +97,33 @@ python seed_registry.py
 Requires a Hermes install with boards under `$LOCALAPPDATA/hermes/kanban/boards/`
 (Windows) — path is resolved in `aos.py`.
 
+## Documentation
+
+| File | For |
+| :--- | :--- |
+| `PROGRESS.md` | leadership — status, assumptions, open decisions |
+| `ARCHITECTURE.md` | machines and new engineers — full context, authoritative on facts |
+| `DECISIONS.md` | record of guardrail/zone/signer changes |
+
 ## Status
 
-**Built and tested:** cross-pod read blocked · unqualified signer blocked ·
-signature recorded · post-signature tamper detected · review queue returns ·
-agentic task assigned to its profile · non-agentic task left unassigned ·
-human blocked from closing agentic work · human completion with deliverable ·
-wrong-board agent rejected.
+**Working:** 11 HTTP routes — review queue, queue health, task creation, agent
+detail, composite pipeline view, gated deliverable download, sign/reject,
+unblock. Enforcement tested: cross-pod read blocked · unqualified signer
+blocked · signature recorded · post-signature tamper detected · unsigned Amber
+release refused · non-agentic role cannot be given a profile · human blocked
+from closing agentic work · countersigner cannot commission · open redirect
+refused.
 
-**Not built:** HTTP layer, real auth, real owner identities.
+**Not built:** real auth (`?as=` stub, dev-only) · seat upload · automated
+tests · deployment · real owner identities.
+
+## Running
+
+```bash
+./run.sh     # detached; survives the shell that launched it
+./stop.sh
+```
 
 ## Rules
 
