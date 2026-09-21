@@ -32,6 +32,19 @@ APPROVALS_DB = Path(__file__).parent / "approvals.db"
 AMBER_SIGNER_ROLE = "countersigner"
 
 
+def _scoped_hash(att_id, digest: str) -> str:
+    """Bind a recorded signature to one attachment as well as its bytes.
+
+    A bare sha256 says 'these bytes were approved' — which would also
+    release a different attachment holding identical content. Scoping to
+    the attachment id keeps each deliverable's decision independent.
+
+    Legacy rows written before this change hold a bare digest; the read
+    path accepts both, so the production approvals DB needs no migration.
+    """
+    return f"attachment:{att_id}:sha256:{digest}"
+
+
 # ---------------------------------------------------------------- authz
 
 def boards_for(user: str) -> list[str]:
@@ -226,15 +239,21 @@ def init_approvals() -> None:
 
 
 def sign(board: str, task_id: str, signer: str, signer_role: str,
-         decision: str, artifact_path: str, note: str = "") -> dict:
-    """Record an Amber sign-off.
+         decision: str, artifact_path: str, note: str = "", *,
+         expected_hash: str) -> dict:
+    """Record an Amber sign-off against one specific attachment.
 
     Signing authority comes from the registry's countersigner role for the
     agent in question. Works identically for agentic and non-agentic roles —
     a human-drafted article needs the same signature as a model-drafted one.
 
-    artifact_hash pins the signature to the exact bytes reviewed, so a
-    deliverable swapped after sign-off is detectable.
+    `expected_hash` is the sha256 the reviewer was shown. If the bytes on
+    disk no longer match it, the signature is refused: a decision must
+    attest to what was actually read, not to whatever occupies the path at
+    the moment Approve is pressed.
+
+    The recorded hash is scoped to the attachment id, so approving one file
+    never releases a sibling that happens to hold identical bytes.
     """
     task = _get_task(board, task_id)
     agent_no = R.agent_of_task(task)
@@ -245,8 +264,28 @@ def sign(board: str, task_id: str, signer: str, signer_role: str,
     if signer not in authorized:
         raise PermissionError(
             f"{signer} is not a qualified signer for agent {agent_no}")
+    _authorize(signer, board)
 
-    digest = hashlib.sha256(Path(artifact_path).read_bytes()).hexdigest()
+    if decision not in ("approved", "rejected"):
+        raise ValueError("decision must be 'approved' or 'rejected'")
+    if not expected_hash:
+        raise ValueError(
+            "expected_hash from the reviewed artifact is required")
+
+    # The path must be an attachment OF THIS TASK, not merely a file
+    # somewhere under the board. Otherwise a signature could be pinned to
+    # an unrelated task's deliverable.
+    path = Path(artifact_path).resolve()
+    if not path.is_relative_to((BOARDS / board).resolve()):
+        raise PermissionError("artifact resolves outside the board")
+    matches = [a for a in deliverables(signer, board, task_id)
+               if Path(a["stored_path"]).resolve() == path]
+    if not matches:
+        raise ValueError("artifact is not an attachment of this task")
+
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if digest != expected_hash:
+        raise ValueError("artifact changed since preview; review it again")
     now = int(time.time())
 
     con = sqlite3.connect(APPROVALS_DB)
@@ -256,7 +295,7 @@ def sign(board: str, task_id: str, signer: str, signer_role: str,
              note, artifact_hash, signed_at)
         VALUES (?,?,?,?,?,?,?,?,?)
     """, (board, task_id, agent_no, signer, signer_role, decision,
-          note, digest, now))
+          note, _scoped_hash(matches[0]["id"], digest), now))
     con.commit()
     con.close()
     return {"task_id": task_id, "agent_no": agent_no, "signer": signer,
@@ -434,71 +473,215 @@ class NotSigned(Exception):
     """An Amber deliverable was requested before it was signed."""
 
 
-def signature_state(board: str, task_id: str) -> dict:
-    """Is this task's output releasable?
+def _digest_is_ambiguous(board: str, task_id: str, digest: str) -> bool:
+    """True when more than one of this task's attachments holds these bytes.
 
-    Green output needs no signature. Amber output is releasable only
-    after an approval is recorded — a rejection does not release it.
+    Only matters for legacy bare-digest approvals, which cannot name the
+    file they were recorded against.
+    """
+    con = _connect(board)
+    rows = con.execute(
+        "SELECT * FROM task_attachments WHERE task_id = ?", (task_id,)).fetchall()
+    con.close()
+    seen = 0
+    for row in rows:
+        try:
+            path = _attachment_path(board, dict(row))
+        except (OSError, PermissionError):
+            continue
+        if hashlib.sha256(path.read_bytes()).hexdigest() == digest:
+            seen += 1
+            if seen > 1:
+                return True
+    return False
+
+
+def _artifact_state(board: str, task_id: str, att_id, digest: str) -> dict:
+    """Review state of ONE attachment at its CURRENT bytes.
+
+    Looks for a decision recorded against this attachment and this digest.
+    Anything else — a decision on a sibling file, on an earlier version of
+    this file, or on another task — is not a match, so tampering and
+    cross-file leakage both resolve to 'pending' rather than 'approved'.
     """
     task = _get_task(board, task_id)
     agent_no = R.agent_of_task(task)
     agent = R.get_agent(agent_no) if agent_no else None
     zone = agent["zone"] if agent else None
 
-    con = sqlite3.connect(APPROVALS_DB)
-    con.row_factory = sqlite3.Row
-    row = con.execute("""
-        SELECT signer, decision, signed_at, artifact_hash FROM approvals
-        WHERE task_id = ? ORDER BY signed_at DESC LIMIT 1
-    """, (task_id,)).fetchone()
-    con.close()
+    con = sqlite3.connect(f"file:{APPROVALS_DB}?mode=ro", uri=True)
+    try:
+        con.row_factory = sqlite3.Row
+        # New rows are attachment-scoped. Legacy rows hold a bare sha256
+        # and are accepted too — but only when this task has exactly one
+        # attachment carrying those bytes, since a bare digest cannot say
+        # WHICH file was reviewed. Ambiguous legacy rows resolve to
+        # pending rather than releasing a file nobody signed.
+        accepted = [_scoped_hash(att_id, digest)]
+        if not _digest_is_ambiguous(board, task_id, digest):
+            accepted.append(digest)
+        row = con.execute(f"""
+            SELECT * FROM approvals
+            WHERE board = ? AND task_id = ?
+              AND artifact_hash IN ({','.join('?' * len(accepted))})
+            ORDER BY signed_at DESC, id DESC LIMIT 1
+        """, (board, task_id, *accepted)).fetchone()
+    finally:
+        con.close()
+
     last = dict(row) if row else None
+    if last:
+        last["artifact_hash"] = digest
 
     if zone != "amber":
-        return {"zone": zone, "approved": True, "reason": None, "last": last}
+        state = "not_required"
+    elif last is None:
+        state = "pending"
+    else:
+        state = last["decision"]
 
-    if last is None:
-        who = R.owners_of(agent_no, AMBER_SIGNER_ROLE) or ["an assigned signer"]
-        return {"zone": zone, "approved": False, "last": None,
-                "reason": f"Awaiting sign-off by {', '.join(who)}."}
+    reason = None
+    if state == "pending":
+        who = R.owners_of(agent_no or "", AMBER_SIGNER_ROLE) or ["an assigned signer"]
+        reason = f"Awaiting sign-off by {', '.join(who)} for these exact bytes."
+    elif state == "rejected":
+        reason = f"Rejected by {last['signer']}. Not releasable."
 
-    if last["decision"] != "approved":
-        return {"zone": zone, "approved": False, "last": last,
-                "reason": f"Rejected by {last['signer']}. Not releasable."}
-
-    return {"zone": zone, "approved": True, "reason": None, "last": last}
+    return {"zone": zone, "approved": state in ("approved", "not_required"),
+            "state": state, "last": last, "reason": reason}
 
 
-def attachment(user: str, board: str, task_id: str, att_id: str) -> dict:
+def _attachment_path(board: str, att: dict) -> Path:
+    """Resolve an attachment's bytes, refusing anything outside the board.
+
+    The value comes from Hermes's DB rather than the request, but a serving
+    route that trusts a filesystem path out of a database is one bad row
+    away from serving arbitrary files.
+    """
+    path = Path(att["stored_path"]).resolve()
+    if not path.is_relative_to((BOARDS / board).resolve()):
+        raise PermissionError(
+            f"attachment {att['id']} resolves outside {board}: {path}")
+    if not path.is_file():
+        raise FileNotFoundError(f"file missing on disk: {path}")
+    return path
+
+
+def signature_state(board: str, task_id: str) -> dict:
+    """Task-level release state: the weakest state across all attachments.
+
+    A task is releasable only when every current attachment is approved.
+    Reports rejection ahead of pending so the actionable problem surfaces
+    first.
+    """
+    task = _get_task(board, task_id)
+    agent_no = R.agent_of_task(task)
+    agent = R.get_agent(agent_no) if agent_no else None
+    zone = agent["zone"] if agent else None
+    if zone != "amber":
+        return {"zone": zone, "approved": True, "state": "not_required",
+                "reason": None, "last": None}
+
+    con = _connect(board)
+    rows = con.execute(
+        "SELECT * FROM task_attachments WHERE task_id = ? ORDER BY id",
+        (task_id,)).fetchall()
+    con.close()
+
+    states = []
+    for row in rows:
+        att = dict(row)
+        try:
+            path = _attachment_path(board, att)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except (OSError, PermissionError):
+            states.append({"zone": zone, "approved": False, "state": "pending",
+                           "last": None,
+                           "reason": "Attachment unavailable; not releasable."})
+            continue
+        states.append(_artifact_state(board, task_id, att["id"], digest))
+
+    for blocking in ("rejected", "pending"):
+        found = next((s for s in states if s["state"] == blocking), None)
+        if found:
+            return found
+    if states:
+        return states[-1]
+    return {"zone": zone, "approved": False, "state": "pending", "last": None,
+            "reason": "No attached artifact to review."}
+
+
+# How a raw kanban status reads to someone who just wants their work.
+# The board's vocabulary is the dispatcher's, not the requester's: "done"
+# means the worker exited, and a task can sit in "blocked" for days looking
+# no different from one nobody has picked up yet.
+PROGRESS = {
+    "triage":      ("Not started", "Waiting to be picked up."),
+    "todo":        ("Not started", "Queued, no worker yet."),
+    "scheduled":   ("Not started", "Scheduled to run later."),
+    "ready":       ("Not started", "Ready for a worker to claim."),
+    "in_progress": ("Working on it now", "A worker is running this."),
+    "review":      ("Finished", "Waiting on a person to review it."),
+    "done":        ("Finished", "The worker finished and produced its result."),
+    "blocked":     ("Stopped", "It stopped and will not restart by itself."),
+    "archived":    ("Archived", "Closed and kept for the record."),
+}
+
+
+def progress(task: dict) -> dict:
+    """Plain-language state of one task, for display.
+
+    Returns the headline, an explanation, and whether the work is actually
+    finished — so a page can stop claiming a blocked task was 'completed by'
+    anyone.
+    """
+    status = task.get("status") or ""
+    label, detail = PROGRESS.get(status, ("Unknown", f"Board status: {status}."))
+    if status == "blocked" and task.get("last_failure_error"):
+        detail = f"{detail} Last error: {task['last_failure_error']}"
+    return {"status": status, "label": label, "detail": detail,
+            "finished": status in ("done", "review", "archived"),
+            "running": status == "in_progress",
+            "stopped": status == "blocked"}
+
+
+def can_review(user: str, board: str, task_id: str) -> bool:
+    """Is this person the qualified signer for this task's agent?
+
+    Cheap enough to call before serving a preview, and it keeps the web
+    layer from having to know how signing authority is resolved.
+    """
+    try:
+        task = _get_task(board, task_id)
+    except (ValueError, FileNotFoundError):
+        return False
+    agent_no = R.agent_of_task(task)
+    return bool(agent_no) and user in R.owners_of(agent_no, AMBER_SIGNER_ROLE)
+
+
+def attachment(user: str, board: str, task_id: str, att_id: str,
+               review: bool = False) -> dict:
     """Resolve one deliverable for serving, with authorization.
 
-    The stored path is verified to live under the board's own directory
-    before anything is read. The value comes from Hermes's DB rather than
-    the request, but a serving route that trusts a filesystem path out of
-    a database is one bad row away from serving arbitrary files.
+    `review=True` is the reviewer's read: it returns a PENDING or REJECTED
+    artifact to the qualified countersigner of that agent, and to nobody
+    else. Reviewing a file you cannot open is not review — but reading it
+    to decide is not the same as releasing it, so the ordinary path below
+    stays gated on an approval.
     """
+    task = _get_task(board, task_id)
+    agent_no = R.agent_of_task(task)
+    can_sign = user in R.owners_of(agent_no or "", AMBER_SIGNER_ROLE)
+
+    if review and not can_sign:
+        raise PermissionError(
+            f"{user} is not a qualified signer for agent {agent_no}")
+
     # A consumer is not on the board. They reach exactly one thing: a
     # signed deliverable of an agent they are named against. Board access
     # is checked only for accountable roles.
-    task = _get_task(board, task_id)
-    agent_no = R.agent_of_task(task)
-    if user in R.consumers_of(agent_no or ""):
-        pass
-    else:
+    if user not in R.consumers_of(agent_no or ""):
         _authorize(user, board)
-
-    # THE SIGNATURE GATE.
-    # An Amber deliverable is not releasable until a qualified signer has
-    # approved it. Without this the signature is decoration: a content
-    # writer could download an unsigned evidence table and draft from
-    # claims nobody cleared, which is the exact failure the CEO
-    # constraint on agent 03 exists to prevent — just relocated from the
-    # model to the human.
-    #
-    # Green ships unsigned by design, so this only bites where it should.
-    gate = signature_state(board, task_id)
-    if gate["zone"] == "amber" and not gate["approved"]:
-        raise NotSigned(gate["reason"])
 
     con = _connect(board)
     row = con.execute("""
@@ -511,14 +694,25 @@ def attachment(user: str, board: str, task_id: str, att_id: str) -> dict:
         raise ValueError(f"no such attachment: {att_id}")
 
     d = dict(row)
-    path = Path(d["stored_path"]).resolve()
-    root = (BOARDS / board).resolve()
-    if not path.is_relative_to(root):
-        raise PermissionError(
-            f"attachment {att_id} resolves outside {board}: {path}")
-    if not path.exists():
-        raise FileNotFoundError(f"file missing on disk: {path}")
+    path = _attachment_path(board, d)
     d["path"] = path
+    d["artifact_hash"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    gate = _artifact_state(board, task_id, d["id"], d["artifact_hash"])
+
+    # THE SIGNATURE GATE.
+    # An Amber deliverable is not releasable until a qualified signer has
+    # approved these exact bytes. Without this the signature is decoration:
+    # a content writer could download an unsigned evidence table and draft
+    # from claims nobody cleared, which is the exact failure the CEO
+    # constraint on agent 03 exists to prevent — just relocated from the
+    # model to the human.
+    #
+    # Green ships unsigned by design, so this only bites where it should.
+    if not gate["approved"] and not review:
+        raise NotSigned(gate["reason"])
+
+    d["signature"] = gate
+    d["can_sign"] = can_sign
     return d
 
 
@@ -546,16 +740,19 @@ def agent_tasks(user: str, agent_no: str) -> list[dict]:
     # leadership oversees every flow in a pod they are attached to.
     # _authorize() inside tasks_for() enforces the board boundary.
 
-    con = sqlite3.connect(APPROVALS_DB)
-    signed = {r[0] for r in con.execute("SELECT task_id FROM approvals")}
-    con.close()
-
     out = []
     for t in tasks_for(user, agent["board"]):
         if t["agent_no"] != agent_no:
             continue
+        # An approval ROW is not an approved TASK: the last decision may
+        # have been a rejection, and a second attachment may be unsigned.
+        # Rendering any row as "signed" is how rejected work disappears
+        # from the queue wearing a green badge.
+        state = signature_state(agent["board"], t["id"])
         out.append({**t, "board": agent["board"],
-                    "signed": t["id"] in signed})
+                    "review_state": state["state"],
+                    "review_reason": state["reason"],
+                    "signed": state["state"] == "approved"})
     return out
 
 
@@ -589,21 +786,25 @@ def unsigned_amber(user: str, mine_only: bool = True) -> list[dict]:
     if mine_only:
         signable = {a["agent_no"] for a in R.agents_for_user(user)
                     if a["ownership"] == AMBER_SIGNER_ROLE}
-    con = sqlite3.connect(APPROVALS_DB)
-    signed = {r[0] for r in con.execute("SELECT task_id FROM approvals")}
-    con.close()
 
     out = []
     for board in boards_for(user):
         for t in tasks_for(user, board):
-            if t["status"] != "done" or t["id"] in signed:
+            if t["status"] != "done":
                 continue
             agent = R.get_agent(t["agent_no"]) if t["agent_no"] else None
             if not agent or agent["zone"] != "amber":
                 continue
             if mine_only and t["agent_no"] not in signable:
                 continue
+            # Still waiting unless every current attachment is approved.
+            # A rejected item remains here: someone has to act on it.
+            state = signature_state(board, t["id"])
+            if state["state"] == "approved":
+                continue
             age = (time.time() - (t["completed_at"] or 0)) / 86400
             out.append({**t, "board": board, "agent_name": agent["name"],
+                        "review_state": state["state"],
+                        "review_reason": state["reason"],
                         "age_days": round(age, 1)})
     return sorted(out, key=lambda r: -r["age_days"])

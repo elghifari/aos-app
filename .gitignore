@@ -101,3 +101,19 @@ tmp/
 
 .aos.pid
 aos.log
+
+*.docx
+*.doc
+*.xlsx
+*.xls
+*.pptx
+*.ppt
+*.pdf
+*.odt
+*.ods
+*.csv
+*.zip
+*.7z
+*.tar
+*.tar.gz
+!AOS_agent_decisions.xlsx

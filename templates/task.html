@@ -11,14 +11,34 @@
   <strong>{{ task.title }}</strong>
   {% if agent %}<span class="tag {{ agent.zone }}">{{ agent.zone }}</span>{% endif %}
   <dl style="margin-top:.7rem">
+    <dt>Status</dt>
+    <dd>
+      <strong>{{ prog.label }}</strong>
+      <div class="muted">{{ prog.detail }}</div>
+    </dd>
     <dt>Agent</dt><dd>{{ agent.agent_no }} · {{ agent.name }}</dd>
     <dt>Pod</dt><dd>{{ board }}</dd>
+    {% if prog.finished %}
     <dt>Completed by</dt>
     <dd>{% if agent.is_agentic %}worker ({{ task.assignee }}){% else %}human · {{ agent.delivery_box }}{% endif %}</dd>
-    <dt>Result</dt><dd>{{ task.result or "—" }}</dd>
+    {% else %}
+    <dt>Assigned to</dt>
+    <dd>{% if agent.is_agentic %}{{ task.assignee or "no worker yet" }}{% else %}a person · {{ agent.delivery_box }}{% endif %}</dd>
+    {% endif %}
+    {% if task.result %}<dt>Result</dt><dd>{{ task.result }}</dd>{% endif %}
   </dl>
   {% if agent %}<div class="guard"><strong>Guardrail.</strong> {{ agent.guardrail }}</div>{% endif %}
 </div>
+
+{% if task.body %}
+<h2>The brief</h2>
+<div class="card">
+  <div style="white-space:pre-wrap">{{ task.body }}</div>
+  <p class="muted" style="margin:.6rem 0 0">
+    What was asked for. Judge the output against this, not against the topic.
+  </p>
+</div>
+{% endif %}
 
 <h2>Deliverables</h2>
 {% if files %}
@@ -29,10 +49,17 @@
         <a class="title" href="/file/{{ board }}/{{ task.id }}/{{ f.id }}?as={{ user }}">{{ f.filename }}</a>
         <div class="muted">{{ (f.size_bytes / 1024) | round(1) }} KB · {{ f.uploaded_by or "—" }}</div>
       </div>
-      <a href="/file/{{ board }}/{{ task.id }}/{{ f.id }}/raw?as={{ user }}"><button class="small">Download</button></a>
+      <a href="/file/{{ board }}/{{ task.id }}/{{ f.id }}?as={{ user }}&back=/task/{{ board }}/{{ task.id }}">
+        <button class="small">{{ "Review" if can_sign else "Open" }}</button></a>
     </div>
   </div>
   {% endfor %}
+  {% if can_sign %}
+  <p class="muted">
+    Each file is signed on its own page, against the bytes you were shown.
+    A task is released only when every file has been approved.
+  </p>
+  {% endif %}
 {% else %}
   <div class="empty">No files attached.</div>
 {% endif %}
@@ -54,32 +81,37 @@
   <div class="empty">No recorded runs.</div>
 {% endif %}
 
-<h2>Sign</h2>
-{% if not can_sign %}
-  <div class="empty">
-    You are not a qualified signer for agent {{ agent.agent_no if agent else "—" }}.
-    Signing authority is per-agent and set in the registry.
-  </div>
+<h2>Review state</h2>
+{% if agent and agent.zone != "amber" %}
+  <div class="empty">Green. No signature required before use.</div>
 {% elif not files %}
   <div class="empty">
-    Nothing to sign. A signature is pinned to the sha256 of the exact bytes
-    reviewed, so there must be a file.
+    Nothing to review yet. A signature is pinned to the exact bytes reviewed,
+    so there must be a file.
   </div>
 {% else %}
-  <form method="post" action="/sign/{{ board }}/{{ task.id }}">
-    <input type="hidden" name="back" value="{{ back }}">
-    <input type="hidden" name="user" value="{{ user }}">
-    <input type="hidden" name="artifact" value="{{ files[0].stored_path }}">
-    <p class="muted" style="margin:.2rem 0 .6rem">
-      Signing <strong>{{ files[0].filename }}</strong>. The hash is recorded, so
-      a file swapped after sign-off is detectable.
-    </p>
-    <textarea name="note" rows="3" placeholder="What did you check? (recorded with the signature)"></textarea>
-    <div style="margin-top:.7rem; display:flex; gap:.5rem">
-      <button class="primary" name="decision" value="approved">Approve</button>
-      <button class="danger"  name="decision" value="rejected">Reject</button>
+  <div class="card {{ 'warn' if state.state == 'rejected' else ('amber' if not state.approved) }}">
+    {% if state.state == "approved" %}
+      <strong style="color:var(--green)">Approved — releasable.</strong>
+    {% elif state.state == "rejected" %}
+      <strong>Rejected. Not releasable.</strong>
+    {% else %}
+      <strong>Awaiting sign-off.</strong>
+    {% endif %}
+    <div class="muted" style="margin-top:.2rem">
+      {{ state.reason or "Every attachment has been approved against its current bytes." }}
     </div>
-  </form>
+    {% if can_sign and not state.approved %}
+    <div class="muted" style="margin-top:.4rem; font-size:.82rem">
+      Open a file above to read it and record your decision.
+    </div>
+    {% elif not can_sign %}
+    <div class="muted" style="margin-top:.4rem; font-size:.82rem">
+      You are not a qualified signer for agent {{ agent.agent_no if agent else "—" }}.
+      Signing authority is per-agent and set in the registry.
+    </div>
+    {% endif %}
+  </div>
 {% endif %}
 
 {% endblock %}

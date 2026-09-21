@@ -128,6 +128,7 @@ def new_task_form(request: Request, agent: str | None = Query(None),
 def create_task_post(request: Request, agent_no: str = Form(...),
                      title: str = Form(...), body: str = Form(""),
                      priority: int = Form(3), user: str = Form(...)):
+    user = current_user(request, user)
     agent = R.get_agent(agent_no)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"unknown agent: {agent_no}")
@@ -137,8 +138,14 @@ def create_task_post(request: Request, agent_no: str = Form(...),
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
-        return RedirectResponse(
-            f"/new?as={user}&agent={agent_no}&error={e}", status_code=303)
+        agents = aos.creatable_agents(user)
+        focus = next((a for a in agents if a["agent_no"] == agent_no), None)
+        return templates.TemplateResponse(request, "new.html", {
+            "user": user, "agents": agents, "selected": agent_no,
+            "focus": focus, "family": R.family_of(agent_no),
+            "error": str(e),
+            "values": {"title": title, "body": body, "priority": priority},
+        }, status_code=422)
     return RedirectResponse(
         f"/task/{agent['board']}/{task_id}?as={user}", status_code=303)
 
@@ -149,10 +156,12 @@ def task_detail(request: Request, board: str, task_id: str,
                 back: str | None = Query(None)):
     user = current_user(request, as_)
     try:
-        task = aos._get_task(board, task_id)
         aos._authorize(user, board)
+        task = aos._get_task(board, task_id)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
     agent_no = R.agent_of_task(task)
     agent = R.get_agent(agent_no) if agent_no else None
     return templates.TemplateResponse(request, "task.html", {
@@ -163,8 +172,9 @@ def task_detail(request: Request, board: str, task_id: str,
         "agent": agent,
         "files": aos.deliverables(user, board, task_id),
         "runs": aos.runs(user, board, task_id),
-        "can_sign": user in R.owners_of(agent_no, "countersigner")
-                    if agent_no else False,
+        "state": aos.signature_state(board, task_id),
+        "prog": aos.progress(task),
+        "can_sign": aos.can_review(user, board, task_id),
     })
 
 
@@ -214,12 +224,21 @@ def family_detail(request: Request, family_no: str,
 
 @app.get("/file/{board}/{task_id}/{att_id}", response_class=HTMLResponse)
 def view_file(request: Request, board: str, task_id: str, att_id: str,
-              as_: str | None = Query(None, alias="as")):
+              as_: str | None = Query(None, alias="as"),
+              back: str | None = Query(None)):
     """Preview a deliverable. Text renders inline; anything else offers
-    a download."""
+    a download.
+
+    A qualified signer previews in REVIEW mode, so pending and rejected
+    Amber work can be read and decided on. Everyone else sees it only
+    once it has been approved. The sign form lives here rather than on
+    the task page: a signature should attest to a file the signer
+    actually opened.
+    """
     user = current_user(request, as_)
+    reviewing = aos.can_review(user, board, task_id)
     try:
-        att = aos.attachment(user, board, task_id, att_id)
+        att = aos.attachment(user, board, task_id, att_id, review=reviewing)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except aos.NotSigned as e:
@@ -234,6 +253,27 @@ def view_file(request: Request, board: str, task_id: str, att_id: str,
         "att": att,
         "text": aos.preview_text(att["path"]),
     })
+
+
+@app.get("/file/{board}/{task_id}/{att_id}/review-raw")
+def review_raw_file(request: Request, board: str, task_id: str, att_id: str,
+                    as_: str | None = Query(None, alias="as")):
+    """The reviewer's copy of an unapproved artifact.
+
+    Separate from /raw so the two intents stay distinct in the code and in
+    the logs: this is 'let the signer read it to decide', never 'release
+    it'. Restricted to that agent's qualified countersigner.
+    """
+    user = current_user(request, as_)
+    try:
+        att = aos.attachment(user, board, task_id, att_id, review=True)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return FileResponse(att["path"], filename=att["filename"],
+                        media_type=att["content_type"]
+                        or "application/octet-stream")
 
 
 @app.get("/file/{board}/{task_id}/{att_id}/raw")
@@ -254,18 +294,25 @@ def download_file(request: Request, board: str, task_id: str, att_id: str,
 
 
 @app.post("/sign/{board}/{task_id}")
-def do_sign(board: str, task_id: str,
+def do_sign(request: Request, board: str, task_id: str,
             decision: str = Form(...), note: str = Form(""),
             artifact: str = Form(...), user: str = Form(...),
+            expected_hash: str = Form(...),
             back: str = Form("")):
+    user = current_user(request, user)
     agent_no = R.agent_of_task(aos._get_task(board, task_id))
     agent = R.get_agent(agent_no)
     try:
         aos.sign(board, task_id, signer=user,
                  signer_role=agent["zone"], decision=decision,
-                 artifact_path=artifact, note=note)
+                 artifact_path=artifact, note=note,
+                 expected_hash=expected_hash)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        # Most likely the file changed between preview and Approve. The
+        # reviewer must see the current bytes before deciding again.
+        raise HTTPException(status_code=409, detail=str(e))
     # Back to where the reviewer was working. Signing one of five queued
     # items should not eject them to the top of the app.
     dest = back if back and _BACK_OK.match(back) else "/"
@@ -274,7 +321,9 @@ def do_sign(board: str, task_id: str,
 
 
 @app.post("/unblock/{board}/{task_id}")
-def do_unblock(board: str, task_id: str, user: str = Form(...)):
+def do_unblock(request: Request, board: str, task_id: str, user: str = Form(...),
+               back: str = Form("")):
+    user = current_user(request, user)
     try:
         aos.unblock(user, board, task_id)
     except PermissionError as e:

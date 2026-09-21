@@ -1,5 +1,7 @@
+{% set values = values | default({}) %}
 <h2>What to do</h2>
 <input type="text" name="title" required maxlength="120"
+       value="{{ values.get('title', '') }}"
        placeholder="One line — what should exist when this is done">
 
 <p class="muted" style="margin:.8rem 0 .3rem">
@@ -8,14 +10,12 @@
   the topic.
 </p>
 <textarea name="body" rows="7"
-          placeholder="Scope, sources, what must not be claimed, where the output goes"></textarea>
+          placeholder="Scope, sources, what must not be claimed, where the output goes">{{ values.get('body', '') }}</textarea>
 
 <h2>Priority</h2>
 <select name="priority"
         style="font:inherit; padding:.45rem; border:1px solid var(--line); border-radius:6px">
-  <option value="1">1 — urgent</option>
-  <option value="2">2</option>
-  <option value="3" selected>3 — normal</option>
-  <option value="4">4</option>
-  <option value="5">5 — whenever</option>
+  {% for value, label in [(1, '1 — urgent'), (2, '2'), (3, '3 — normal'), (4, '4'), (5, '5 — whenever')] %}
+  <option value="{{ value }}" {{ 'selected' if values.get('priority', 3) == value }}>{{ label }}</option>
+  {% endfor %}
 </select>

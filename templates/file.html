@@ -8,15 +8,49 @@
   <span class="muted">{{ user }}</span>
 </header>
 
+{% set sig = att.signature %}
+{% if sig.state == "pending" and att.can_sign %}
+<div class="card amber">
+  <strong>Awaiting your decision.</strong>
+  <div class="muted" style="margin-top:.2rem">
+    You are reading this to decide. It is not released to anyone else until
+    you approve it.
+  </div>
+</div>
+{% elif sig.state == "rejected" %}
+<div class="card warn">
+  <strong>Rejected by {{ sig.last.signer }}.</strong>
+  <div class="muted" style="margin-top:.2rem">
+    Not releasable. {{ sig.last.note or "No reason recorded." }}
+  </div>
+</div>
+{% elif sig.state == "approved" %}
+<div class="card">
+  <strong style="color:var(--green)">Approved by {{ sig.last.signer }}.</strong>
+  <div class="muted" style="margin-top:.2rem">
+    Signed against these exact bytes. Any later edit revokes release until
+    it is reviewed again.
+  </div>
+</div>
+{% endif %}
+
 <div class="card">
   <dl>
     <dt>Size</dt><dd>{{ (att.size / 1024) | round(1) }} KB</dd>
     <dt>Uploaded by</dt><dd>{{ att.uploaded_by or "—" }}</dd>
     <dt>Type</dt><dd>{{ att.content_type or "unknown" }}</dd>
+    <dt>Checksum</dt><dd><code>{{ att.artifact_hash[:16] }}…</code></dd>
   </dl>
   <div style="margin-top:.7rem">
+    {% if sig.approved %}
     <a href="/file/{{ board }}/{{ task_id }}/{{ att.id }}/raw?as={{ user }}">
       <button class="small">Download</button></a>
+    {% elif att.can_sign %}
+    <a href="/file/{{ board }}/{{ task_id }}/{{ att.id }}/review-raw?as={{ user }}">
+      <button class="small">Open full file to review</button></a>
+    <span class="muted" style="margin-left:.5rem; font-size:.8rem">
+      for review only — not a release</span>
+    {% endif %}
   </div>
 </div>
 
@@ -24,13 +58,36 @@
   <h2>Contents</h2>
   <pre class="filebody">{{ text }}</pre>
   <p class="muted">
-    Preview is truncated at 20&nbsp;000 characters. Download the file if you
+    Preview is truncated at 20&nbsp;000 characters. Open the full file if you
     need the whole thing before signing.
   </p>
 {% else %}
   <div class="empty" style="margin-top:1rem">
-    No inline preview for this file type. Download it to review.
+    No inline preview for this file type.
+    {%- if att.can_sign and not sig.approved %} Open the full file to review it.
+    {%- else %} Download it to review.{% endif %}
   </div>
+{% endif %}
+
+{% if att.can_sign and sig.zone == "amber" %}
+<h2>{{ "Re-review" if sig.state != "pending" else "Sign" }}</h2>
+<form method="post" action="/sign/{{ board }}/{{ task_id }}">
+  <input type="hidden" name="back" value="{{ back }}">
+  <input type="hidden" name="user" value="{{ user }}">
+  <input type="hidden" name="artifact" value="{{ att.stored_path }}">
+  <input type="hidden" name="expected_hash" value="{{ att.artifact_hash }}">
+  <p class="muted" style="margin:.2rem 0 .6rem">
+    Signing <strong>{{ att.filename }}</strong> as shown above. The decision is
+    recorded against this file's checksum, so an edit after signing is
+    detectable and removes release until reviewed again.
+  </p>
+  <textarea name="note" rows="3"
+            placeholder="What did you check? (recorded with the signature)"></textarea>
+  <div style="margin-top:.7rem; display:flex; gap:.5rem">
+    <button class="primary" name="decision" value="approved">Approve</button>
+    <button class="danger"  name="decision" value="rejected">Reject</button>
+  </div>
+</form>
 {% endif %}
 
 {% endblock %}

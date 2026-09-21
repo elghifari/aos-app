@@ -11,13 +11,6 @@
   </div>
 </header>
 
-{% if env == "development" %}
-<div class="devbar">
-  <strong>Development.</strong> Identity is a query parameter, not authentication.
-  Switch user with <code>?as=u_hr</code>. Nothing here is a real signature.
-</div>
-{% endif %}
-
 {# ── Review queue ─────────────────────────────────────────── #}
 <h2>Needs your signature
   <span class="muted">({{ review|length }})</span>

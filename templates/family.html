@@ -60,8 +60,10 @@
       </div>
       <div style="text-align:right; white-space:nowrap">
         {% if s.zone == "amber" and t.status == "done" %}
-          {% if t.signed %}
+          {% if t.review_state == "approved" %}
             <span class="tag" style="background:#dcfce7;color:#15803d">signed</span>
+          {% elif t.review_state == "rejected" %}
+            <span class="tag red">rejected</span>
           {% else %}
             <span class="tag amber">unsigned</span>
           {% endif %}
