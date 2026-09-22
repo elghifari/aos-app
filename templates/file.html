@@ -72,7 +72,6 @@
 {% if att.can_sign and sig.zone == "amber" %}
 <h2>{{ "Re-review" if sig.state != "pending" else "Sign" }}</h2>
 <form method="post" action="/sign/{{ board }}/{{ task_id }}">
-  <input type="hidden" name="back" value="{{ back }}">
   <input type="hidden" name="user" value="{{ user }}">
   <input type="hidden" name="artifact" value="{{ att.stored_path }}">
   <input type="hidden" name="expected_hash" value="{{ att.artifact_hash }}">

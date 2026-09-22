@@ -1,8 +1,8 @@
 # AOS — Talenta Agentic Operating System
 
 The human-facing layer for Talenta's AI agent roster. Hermes owns the agent
-runtime; this app owns **who may see what** and **the recorded Amber
-signature**.
+runtime; this app owns **who may request and see work**, **what needs human
+review**, and **the recorded artifact-bound signature**.
 
 Full architecture: the `aos` Hermes skill, `references/architecture.md`.
 Governance (Red Zone, roster, briefs, rhythm): same skill, other references.
@@ -13,10 +13,13 @@ Governance (Red Zone, roster, briefs, rhythm): same skill, other references.
 | :--- | :--- |
 | Hermes | profiles, gateway, kanban dispatcher, cron, skills |
 | Board DBs (`~/.hermes/kanban/boards/<pod>/kanban.db`) | data plane |
-| **This app** | users, sessions, authz, approvals |
+| **This app** | employee task UI, pod authorization, review gates, approvals |
 
-Reads open board DBs **read-only**. Writes go through the `hermes kanban` CLI so
-schema invariants stay Hermes's problem.
+Board data is read directly from SQLite. Task creation, assignment, linking,
+unblocking, and dispatch go through `hermes kanban` so Hermes retains those
+invariants. Dismissing finished work is the narrow exception: AOS changes only
+`tasks.status` to `archived` in the WAL-backed board DB, avoiding about two
+seconds of CLI startup for one field update.
 
 ## Authorization
 
@@ -43,12 +46,16 @@ Playbook metric: **Amber outputs shipped without sign-off must be zero.**
 ## Layout
 
 ```
-aos.py            authz, task lifecycle, approvals
+aos.py            authz, task lifecycle, gates, approval and integrity state
+web.py            FastAPI routes and development identity handling
 registry.py       agent registry + ownership
 seed_registry.py  seeds 25 roles from the playbook roster
+templates/        employee, reviewer, agent, and pipeline views
+tests/            isolated stdlib unittest suite; temporary DBs only
 approvals.db      signature store (gitignored — audit data)
 registry.db       agent/owner store (gitignored — regenerate via seed)
-artifacts/        deliverables (gitignored)
+demo.sh           prepares a clean local demo without replacing the UI
+rehearse.sh        marks and resets rehearsal-created board state
 ```
 
 ## The agent registry
@@ -77,17 +84,24 @@ separate access map to drift out of sync with the roster.
 25 rather than 20 because composites split: 03a/03b, 07a/07b/07c, 11a/11b/11c.
 
 Consequences enforced in code:
-- `create_task()` assigns a profile **only** for agentic roles. Non-agentic
-  tasks are deliberately left unassigned, so no dispatcher can claim them.
+- `create_task()` assigns a profile **only** for agentic roles, then dispatches
+  immediately. Non-agentic tasks are deliberately left unassigned.
 - `register()` refuses to attach a profile to a non-agentic role — 07a's
   deterministic gate cannot accidentally be given a model.
 - `complete_by_human()` refuses to close a task belonging to an agentic role.
-- Every guardrail is queryable data, not prose in a task body.
+- Agent 03 is split in code: 03b cannot start until a qualified signer approves
+  a current 03a artifact. The approved claim set and its SHA-256 provenance are
+  injected into 03b; the drafter profile has no web access.
+- 03a standing evidence rules are prepended to every task, so employees can use
+  short briefs without having to repeat citation and KURI controls.
+- Evidence-tool failures are correlated against the run window. A degraded run
+  is held for human review rather than trusted because the worker reported
+  success; a qualified signature clears the warning for those exact bytes.
 
 Seeded owners are **placeholders** (`u_hr`, `u_clinical_director`). Real
 identities come from HR; nothing in the registry is real until then.
 
-## Running
+## First-time initialization
 
 ```bash
 python -c "import aos; aos.init_approvals()"
@@ -95,28 +109,7 @@ python seed_registry.py
 ```
 
 Requires a Hermes install with boards under `$LOCALAPPDATA/hermes/kanban/boards/`
-(Windows) — path is resolved in `aos.py`.
-
-## Documentation
-
-| File | For |
-| :--- | :--- |
-| `PROGRESS.md` | leadership — status, assumptions, open decisions |
-| `ARCHITECTURE.md` | machines and new engineers — full context, authoritative on facts |
-| `DECISIONS.md` | record of guardrail/zone/signer changes |
-
-## Status
-
-**Working:** 11 HTTP routes — review queue, queue health, task creation, agent
-detail, composite pipeline view, gated deliverable download, sign/reject,
-unblock. Enforcement tested: cross-pod read blocked · unqualified signer
-blocked · signature recorded · post-signature tamper detected · unsigned Amber
-release refused · non-agentic role cannot be given a profile · human blocked
-from closing agentic work · countersigner cannot commission · open redirect
-refused.
-
-**Not built:** real auth (`?as=` stub, dev-only) · seat upload · automated
-tests · deployment · real owner identities.
+(Windows) — paths are resolved in `aos.py`.
 
 ## Running
 
@@ -125,9 +118,46 @@ tests · deployment · real owner identities.
 ./stop.sh
 ```
 
+The development UI is available at `http://127.0.0.1:8077`. Identity is still a
+local-only `?as=<user>` parameter; do not expose this server to other machines.
+
+## Testing
+
+```bash
+python -m unittest discover -s tests
+```
+
+The suite uses temporary registries, board DBs, approval DBs, filesystems, and
+profile logs. It neither reads nor writes live approvals and never calls an LLM.
+
+## Documentation
+
+| File | For |
+| :--- | :--- |
+| `HANDOVER.md` | next engineering session — verified state, current work, known gaps |
+| `ARCHITECTURE.md` | current implementation, boundaries, data flow, known defects |
+| `DECISIONS.md` | record of guardrail/zone/signer changes |
+
+## Status
+
+**Working:** 13 application routes covering employee work, queue health, task
+creation, agent and composite views, task progress, review-only file preview,
+artifact-bound approve/reject, gated download, unblock, and non-destructive
+archive. The home page separates running, waiting, and finished work; finished
+items are capped and can be cleared without destroying their audit history.
+
+Enforcement includes cross-pod authorization, qualified per-agent signers,
+current-byte approval hashes, tamper detection, rejection state, unsigned Amber
+release refusal, 03a→03b gate provenance, degraded evidence-run holds,
+non-agentic role isolation, immediate dispatch, and safe redirect handling.
+
+**Not built:** real authentication and sessions · seat-work upload · deployment ·
+real owner identities · employee clarification/revision loop · capability
+proposal/IT approval interface.
+
 ## Rules
 
 - **Never commit `*.db`.** `approvals.db` is audit data.
-- **Never commit `artifacts/`.** Deliverables may contain organisational data.
+- **Never commit generated deliverables.** They may contain organisational data.
 - **No patient-identifiable data anywhere in this repo.** Red Zone item 4.
-- Authz is enforced in code, never by prompting a model.
+- Authz and release gates are enforced in code, never by prompting a model.

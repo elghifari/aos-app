@@ -14,8 +14,10 @@ never be one environment variable away from production.
 """
 import os
 import re
+import secrets
+import time
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import (FileResponse, HTMLResponse,
@@ -33,31 +35,105 @@ templates = Jinja2Templates(directory=str(BASE / "templates"))
 
 
 
-# Pages are reached from several places: the queue, an agent, a family, queue
-# health. Sending everyone "home" loses the thread — you came from agent 10 to
-# read one of its tasks, and back should return you to agent 10.
-#
-# Derived from Referer, but never trusted raw: an attacker-controlled Referer
-# turned into a link is an open redirect. Only same-origin paths matching our
-# own routes are accepted, and anything else falls back to the queue.
+# Keep short-lived return locations server-side so navigation URLs stay clean.
+# Only same-origin routes matching this app's navigation surface are stored.
 _BACK_OK = re.compile(r"^/(agent/[\w-]+|family/\d+|queue|task/[\w-]+/[\w-]+)?$")
+_RETURN_SESSION_COOKIE = "aos_return_session"
+_RETURN_SESSION_TTL_SECONDS = 600
+_RETURN_SESSIONS: dict[str, tuple[float, dict[str, str]]] = {}
+
+
+@app.middleware("http")
+async def persist_return_session(request: Request, call_next):
+    response = await call_next(request)
+    session_id = getattr(request.state, "return_session_id", None)
+    if session_id:
+        response.set_cookie(
+            _RETURN_SESSION_COOKIE,
+            session_id,
+            max_age=_RETURN_SESSION_TTL_SECONDS,
+            httponly=True,
+            samesite="lax",
+            secure=AOS_ENV != "development",
+        )
+    return response
+
+
+def _valid_return_path(path: str | None) -> str | None:
+    return path if path and _BACK_OK.match(path) else None
+
+
+def _return_session(request: Request, create: bool = False) -> dict[str, str] | None:
+    now = time.monotonic()
+    if create:
+        for stale_id, (expires_at, _) in tuple(_RETURN_SESSIONS.items()):
+            if expires_at <= now:
+                del _RETURN_SESSIONS[stale_id]
+    session_id = request.cookies.get(_RETURN_SESSION_COOKIE)
+    entry = _RETURN_SESSIONS.get(session_id) if session_id else None
+    if entry and entry[0] <= now:
+        del _RETURN_SESSIONS[session_id]
+        entry = None
+    if not entry:
+        if not create:
+            return None
+        session_id = secrets.token_urlsafe(32)
+        entry = (now + _RETURN_SESSION_TTL_SECONDS, {})
+    paths = entry[1]
+    _RETURN_SESSIONS[session_id] = (now + _RETURN_SESSION_TTL_SECONDS, paths)
+    request.state.return_session_id = session_id
+    return paths
+
+
+def _referer_path(request: Request) -> str | None:
+    ref = request.headers.get("referer", "")
+    if not ref:
+        return None
+    parsed = urlparse(ref)
+    if parsed.netloc != request.url.netloc:
+        return None
+    return _valid_return_path(parsed.path)
+
+
+def _remember_return_path(request: Request, user: str,
+                          explicit: str | None = None) -> str | None:
+    candidate = explicit
+    if not candidate:
+        candidate = _referer_path(request)
+    candidate = _valid_return_path(candidate)
+    if candidate:
+        returns = _return_session(request, create=True)
+        assert returns is not None
+        returns[user] = candidate
+    return candidate
+
+
+def _take_return_path(request: Request, user: str) -> str | None:
+    returns = _return_session(request)
+    candidate = _valid_return_path(returns.pop(user, None) if returns else None)
+    return candidate
+
+
+def _with_user(path: str, user: str) -> str:
+    sep = "&" if "?" in path else "?"
+    return f"{path}{sep}as={user}"
 
 
 def back_link(request: Request, user: str, explicit: str | None = None) -> str:
-    """Where the back arrow should point. explicit wins (it survives a POST),
-    then Referer, then the queue."""
-    candidate = explicit
+    """Where the back arrow should point: request source, session, queue."""
+    candidate = _remember_return_path(request, user, explicit)
     if not candidate:
-        ref = request.headers.get("referer", "")
-        if ref:
-            p = urlparse(ref)
-            same_origin = (p.netloc == request.url.netloc)
-            if same_origin and _BACK_OK.match(p.path):
-                candidate = p.path
-    if not candidate or not _BACK_OK.match(candidate):
-        return f"/?as={user}"
-    sep = "&" if "?" in candidate else "?"
-    return f"{candidate}{sep}as={user}"
+        returns = _return_session(request)
+        candidate = _valid_return_path(returns.get(user) if returns else None)
+    return _with_user(candidate or "/", user)
+
+
+def return_destination(request: Request, user: str, explicit: str | None = None,
+                       fallback: str = "/") -> str:
+    candidate = (_remember_return_path(request, user, explicit)
+                 or _take_return_path(request, user)
+                 or fallback)
+    return _with_user(candidate, user)
 
 
 def current_user(request: Request, as_: str | None = None) -> str:
@@ -79,7 +155,8 @@ def current_user(request: Request, as_: str | None = None) -> str:
 
 
 @app.get("/", response_class=HTMLResponse)
-def home(request: Request, as_: str | None = Query(None, alias="as")):
+def home(request: Request, as_: str | None = Query(None, alias="as"),
+         notice: str | None = Query(None)):
     user = current_user(request, as_)
     agents = R.agents_for_user(user)
     return templates.TemplateResponse(request, "queue.html", {
@@ -87,11 +164,13 @@ def home(request: Request, as_: str | None = Query(None, alias="as")):
         "agents": agents,
         "grouped": R.group_by_family(agents),
         "boards": aos.boards_for(user),
+        "work": aos.my_work(user),
         "review": aos.unsigned_amber(user),
         "oversight": [t for t in aos.unsigned_amber(user, mine_only=False)
                       if t["id"] not in {r["id"] for r in aos.unsigned_amber(user)}],
         "blocked": aos.blocked_tasks(user),
         "env": AOS_ENV,
+        "notice": notice,
     })
 
 
@@ -109,19 +188,36 @@ def queue_health(request: Request, as_: str | None = Query(None, alias="as")):
 def new_task_form(request: Request, agent: str | None = Query(None),
                   as_: str | None = Query(None, alias="as")):
     user = current_user(request, as_)
+    return _new_task_form(request, user, agent,
+                          request.query_params.get("error"), None, status=200)
+
+
+def _new_task_form(request: Request, user: str, agent: str | None,
+                   error: str | None, values: dict | None, status: int = 422):
+    """The task form, used for both the empty case and every rejection.
+
+    Arriving from an agent page scopes the form to that agent. The user
+    already chose; re-presenting the full list makes them choose twice and
+    buries the choice they made in a radio list.
+    """
     creatable = aos.creatable_agents(user)
-    # Arriving from an agent page scopes the form to that agent. The user
-    # already chose; re-presenting the full list makes them choose twice
-    # and buries the choice they made in a radio list.
     focus = next((a for a in creatable if a["agent_no"] == agent), None)
+    gate = None
+    if focus:
+        try:
+            gate = aos.gate_state(user, focus["board"], agent)
+        except PermissionError:
+            gate = None
     return templates.TemplateResponse(request, "new.html", {
         "user": user,
         "agents": creatable,
         "selected": agent,
         "focus": focus,
+        "gate": gate,
         "family": R.family_of(agent) if agent else None,
-        "error": request.query_params.get("error"),
-    })
+        "error": error,
+        "values": values,
+    }, status_code=status)
 
 
 @app.post("/new")
@@ -137,15 +233,12 @@ def create_task_post(request: Request, agent_no: str = Form(...),
                                   title, body, priority)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+    except aos.GateNotPassed as e:
+        return _new_task_form(request, user, agent_no, str(e),
+                              {"title": title, "body": body, "priority": priority})
     except ValueError as e:
-        agents = aos.creatable_agents(user)
-        focus = next((a for a in agents if a["agent_no"] == agent_no), None)
-        return templates.TemplateResponse(request, "new.html", {
-            "user": user, "agents": agents, "selected": agent_no,
-            "focus": focus, "family": R.family_of(agent_no),
-            "error": str(e),
-            "values": {"title": title, "body": body, "priority": priority},
-        }, status_code=422)
+        return _new_task_form(request, user, agent_no, str(e),
+                              {"title": title, "body": body, "priority": priority})
     return RedirectResponse(
         f"/task/{agent['board']}/{task_id}?as={user}", status_code=303)
 
@@ -153,8 +246,13 @@ def create_task_post(request: Request, agent_no: str = Form(...),
 @app.get("/task/{board}/{task_id}", response_class=HTMLResponse)
 def task_detail(request: Request, board: str, task_id: str,
                 as_: str | None = Query(None, alias="as"),
-                back: str | None = Query(None)):
+                back: str | None = Query(None),
+                notice: str | None = Query(None)):
     user = current_user(request, as_)
+    if _valid_return_path(back):
+        _remember_return_path(request, user, back)
+        suffix = f"&notice={quote(notice)}" if notice else ""
+        return RedirectResponse(f"/task/{board}/{task_id}?as={user}{suffix}", status_code=303)
     try:
         aos._authorize(user, board)
         task = aos._get_task(board, task_id)
@@ -169,12 +267,14 @@ def task_detail(request: Request, board: str, task_id: str,
         "user": user,
         "board": board,
         "task": task,
+        "brief": aos.brief_for_display(task),
         "agent": agent,
         "files": aos.deliverables(user, board, task_id),
         "runs": aos.runs(user, board, task_id),
         "state": aos.signature_state(board, task_id),
         "prog": aos.progress(task),
         "can_sign": aos.can_review(user, board, task_id),
+        "notice": notice,
     })
 
 
@@ -236,13 +336,19 @@ def view_file(request: Request, board: str, task_id: str, att_id: str,
     actually opened.
     """
     user = current_user(request, as_)
+    if _valid_return_path(back):
+        _remember_return_path(request, user, back)
+        return RedirectResponse(f"/file/{board}/{task_id}/{att_id}?as={user}", status_code=303)
     reviewing = aos.can_review(user, board, task_id)
     try:
         att = aos.attachment(user, board, task_id, att_id, review=reviewing)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except aos.NotSigned as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        dest = _with_user(
+            _remember_return_path(request, user, back) or f"/task/{board}/{task_id}",
+            user)
+        return RedirectResponse(f"{dest}&notice={quote(str(e))}", status_code=303)
     except (ValueError, FileNotFoundError) as e:
         raise HTTPException(status_code=404, detail=str(e))
     return templates.TemplateResponse(request, "file.html", {
@@ -313,11 +419,23 @@ def do_sign(request: Request, board: str, task_id: str,
         # Most likely the file changed between preview and Approve. The
         # reviewer must see the current bytes before deciding again.
         raise HTTPException(status_code=409, detail=str(e))
-    # Back to where the reviewer was working. Signing one of five queued
-    # items should not eject them to the top of the app.
-    dest = back if back and _BACK_OK.match(back) else "/"
-    sep = "&" if "?" in dest else "?"
-    return RedirectResponse(f"{dest}{sep}as={user}", status_code=303)
+    return RedirectResponse(return_destination(request, user, back), status_code=303)
+
+
+@app.post("/dismiss/{board}/{task_id}")
+def do_dismiss(request: Request, board: str, task_id: str,
+               user: str = Form(...), back: str = Form("")):
+    """Clear a finished item off the owner's list. Archives, never deletes."""
+    user = current_user(request, user)
+    try:
+        aos.dismiss(user, board, task_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except aos.CannotDismiss as e:
+        dest = return_destination(request, user, back)
+        return RedirectResponse(
+            f"{dest}&notice={quote(str(e))}", status_code=303)
+    return RedirectResponse(return_destination(request, user, back), status_code=303)
 
 
 @app.post("/unblock/{board}/{task_id}")
@@ -328,8 +446,4 @@ def do_unblock(request: Request, board: str, task_id: str, user: str = Form(...)
         aos.unblock(user, board, task_id)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
-    # Back to where the reviewer was working. Signing one of five queued
-    # items should not eject them to the top of the app.
-    dest = back if back and _BACK_OK.match(back) else "/"
-    sep = "&" if "?" in dest else "?"
-    return RedirectResponse(f"{dest}{sep}as={user}", status_code=303)
+    return RedirectResponse(return_destination(request, user, back), status_code=303)

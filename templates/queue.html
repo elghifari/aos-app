@@ -11,6 +11,63 @@
   </div>
 </header>
 
+{% if notice %}
+<dialog open class="notice">
+  <strong>Cannot mark this done yet</strong>
+  <p>{{ notice }}</p>
+  <form method="dialog"><button class="primary">OK</button></form>
+</dialog>
+{% endif %}
+
+{# ── The requester's own work, first ───────────────────────── #}
+{% if work.running or work.waiting or work.ready %}
+<h2>Your work</h2>
+
+{% for t in work.running %}
+<div class="card">
+  <div class="row">
+    <div>
+      <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+      <div class="muted">{{ t.agent_name }} · <strong>Working on it now</strong></div>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+{% for t in work.waiting %}
+<div class="card">
+  <div class="row">
+    <div>
+      <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+      <div class="muted">{{ t.agent_name }} · {{ t.progress.label }}</div>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+{% for t in work.ready %}
+<div class="card">
+  <div class="row">
+    <div>
+      <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+      <div class="muted">{{ t.agent_name }} · Finished
+        {%- if t.deliverables %} · {{ t.deliverables }} file{{ "s" if t.deliverables != 1 }}{% endif %}</div>
+    </div>
+    <form method="post" action="/dismiss/{{ t.board }}/{{ t.id }}">
+      <input type="hidden" name="user" value="{{ user }}">
+      <button class="small" title="Clear from this list. The task and its files are kept.">Done</button>
+    </form>
+  </div>
+</div>
+{% endfor %}
+{% if work.ready_total > work.ready|length %}
+<p class="muted">
+  Showing the {{ work.ready|length }} most recent of {{ work.ready_total }} finished items.
+  The rest stay on each agent's page.
+</p>
+{% endif %}
+{% endif %}
+
 {# ── Review queue ─────────────────────────────────────────── #}
 <h2>Needs your signature
   <span class="muted">({{ review|length }})</span>
@@ -21,7 +78,7 @@
   <div class="card amber">
     <div class="row">
       <div>
-        <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}&back=/">{{ t.title }}</a>
+        <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
         <span class="tag amber">amber</span>
         <div class="muted"><a href="/agent/{{ t.agent_no }}?as={{ user }}">{{ t.agent_name }}</a> · {{ t.board }}
           {%- if t.deliverables %} · {{ t.deliverables }} file{{ "s" if t.deliverables != 1 }}{% endif %}</div>
@@ -48,7 +105,7 @@
 <div class="card">
   <div class="row">
     <div>
-      <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}&back=/">{{ t.title }}</a>
+      <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
       <span class="tag amber">amber</span>
       <div class="muted"><a href="/agent/{{ t.agent_no }}?as={{ user }}">{{ t.agent_name }}</a>
         · {{ t.board }} · not yours to sign</div>

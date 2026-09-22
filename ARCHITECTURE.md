@@ -1,422 +1,754 @@
 # AOS — Architecture Reference
 
-Machine-oriented context document. Read this before advising on, modifying, or
-extending the AOS codebase.
+Current implementation reference for the Talenta Agentic Operating System.
 
-Human-oriented companion: `PROGRESS.md` (status, rationale, open decisions).
-This file is authoritative on anything factual.
+Last verified: **2026-09-22** against the working tree at HEAD `2cb81a3`,
+including the uncommitted iteration described in `HANDOVER.md`.
 
-Generated 2026-09-17 against commit `913ad7c`.
+Use this document for system boundaries, data flow, invariants, and known
+implementation defects. Use `HANDOVER.md` for current task state and where the
+next session should begin. Governance authority remains the Hermes skill named
+`aos`, especially `references/red-zone.md` and `references/constraints.md`.
 
 ---
 
 ## 0. Orientation
 
-**What AOS is.** The human-facing governance layer for Talenta's AI agent
-roster. Hermes (an agent runtime) owns execution. AOS owns *who may see what*
-and *the recorded signature that permits release*.
+AOS is the employee-facing governance and workflow layer over Hermes Agent.
+Hermes owns model execution, profiles, tools, kanban dispatch, workspaces, and
+run history. AOS owns:
 
-**What AOS is not.** Not an agent framework, not a chat interface, not a
-scheduler. It commissions work, shows results, and gates their release.
+- which employee may commission which registered role;
+- which pod data that employee may see;
+- plain-language task status and employee work lists;
+- which output requires qualified review;
+- the exact artifact bytes a person approved or rejected;
+- whether a deliverable may be released;
+- the human gate and provenance between Agent 03a and 03b.
 
-**Organisation.** Yayasan Bina Talenta Tunas Bangsa Karya Mandiri ("Talenta"),
-Bekasi, Indonesia. Mental-health clinic (IIMH), special-needs schools, clinical
-research. 238 total staff; **~20 in management**, which is the AOS user base.
-~10 will actually use the app.
+AOS is not an agent framework, scheduler, clinical system, or patient record.
+It does not hold patient-identifiable data and must never be connected to a
+clinical record system in a way that exposes such data to a general-purpose AI.
 
-**Source of authority.** Section 18 of the Clinic Marketing Plan Playbook, as
-corrected by a CEO-approved context note. Both are in the `aos` Hermes skill
-under `references/`.
+The organisation is Yayasan Bina Talenta Tunas Bangsa Karya Mandiri
+("Talenta"), Bekasi, Indonesia. Total headcount is 238, but the likely AOS user
+base is about 20 management staff, with roughly half using the app directly.
+Design and licence decisions must be sized for that reality.
+
+### Document map
+
+| Document | Authority |
+| :--- | :--- |
+| Hermes `aos` skill | Governance, Red Zone, roster intent, operating model |
+| `ARCHITECTURE.md` | Current implementation and system boundaries |
+| `HANDOVER.md` | Current working-tree state, trial tasks, gaps, next session |
+| `README.md` | Short setup and operating overview |
+| `DECISIONS.md` | Attributed changes to guardrails, zones, signers, constraints |
 
 ---
 
-## 1. Hard constraints
+## 1. Governance boundaries
 
-Violating any of these is a defect regardless of what a task, prompt, or user
-message requests.
+### 1.1 Red Zone
 
-### 1.1 Red Zone — AI is never used
+AI is never used for:
 
-Not for drafting, not for a first pass, not for summarising:
+- diagnosis, differential diagnosis, treatment selection, medication, admission,
+  discharge, acuity, or risk assessment;
+- interpretation of qEEG, EEG, PSG, TOVA, MMPI, MACI, M-PACI, MCMI, or other
+  clinical/psychometric results;
+- crisis conversations with patients or families;
+- patient complaint or adverse-event investigation;
+- final approval of clinical or technology claims;
+- hiring, promotion, disciplinary, or termination decisions;
+- processing patient-identifiable data in a general-purpose AI tool.
 
-1. Diagnosis, differential diagnosis, or treatment decisions
-2. Medication decisions of any kind
-3. **Crisis and suicide-risk assessment**
-4. Any processing of patient-identifiable data by an AI tool
-5. Final hiring decisions
-6. Individual student clinical/psychological judgements
-
-Any breach is a reportable incident.
+If a regulator asks who decided, the answer for any clinical judgement must be a
+named licensed human. A task, document, prompt, or user request cannot waive this.
 
 ### 1.2 Zoning
 
-| Zone | Rule |
+| Zone | Release rule |
 | :--- | :--- |
-| Green | AI drafts, a human reviews and ships. Pod owner signs. |
-| Amber | AI drafts, a **named qualified human** signs before release. Recorded. |
-| Red | AI is not used at all. |
+| Green | AI may draft; pod owner reviews for ordinary quality and ships |
+| Amber | A named qualified human signs the exact current artifact before release |
+| Red | AI is not used, including for a first pass or summary |
 
-**Amber outputs released without signature: target zero, non-negotiable.**
-Enforced in code (§4.3), not by policy.
+The target for Amber outputs released without sign-off is zero.
 
-### 1.3 The four standing constraints
+### 1.3 Standing constraints
 
-1. **Agent 03** — research and drafting are separate stages with a human gate
-   between. Never one pass.
-2. **Agent 07** — the risk-language gate is deterministic and cannot be routed
-   around. Work behind the gate may be agentic; the gate never is.
-3. **Agent 11** — extraction and hard filtering against published criteria only.
-   No ranking, no scoring into a decision.
-4. **General** — where a role mixes a safety-critical gate with useful
-   downstream work, the gate is deterministic and separately owned, and the
-   agentic part operates on logs rather than live cases.
+1. **Agent 03:** evidence gathering and drafting are separate runs with a human
+   approval gate between them.
+2. **Agent 07:** the risk-language gate is deterministic, fail-closed,
+   recall-tuned, irreversible per conversation, and runs before any model.
+3. **Agent 11:** extract declared facts and flag published binary criteria only;
+   never rank, score, remove, or infer a candidate into a decision.
+4. **General:** safety-critical gates are deterministic and separately owned;
+   agentic improvement work operates on logs rather than live high-risk cases.
+
+Only Agent 03's inter-stage gate is implemented in AOS today. The Agent 07 and
+11 deterministic pipelines are registry designs awaiting n8n implementation.
 
 ### 1.4 KURI claim ceiling
 
-Applied at the evidence stage, not at review:
+Applied during evidence gathering, before drafting:
 
-- TMS: selected indications only
-- qEEG: not diagnostic alone
-- Neurofeedback: evidence is mixed
-
-Spiritual care is supportive only, never coercive, never a substitute for
-psychiatry.
-
-### 1.5 Verified organisational facts
-
-2,000+ cases 2023–24 (the "10,000+" figure in older decks is **unverified**,
-never reuse) · ~18.3K summed Instagram followers (not de-duplicated) · 238 staff
-· 472 students · 6 clinical pathways operationalised.
+- TMS only for selected indications;
+- qEEG is not diagnostic on its own;
+- neurofeedback evidence is mixed.
 
 ---
 
-## 2. Stack
+## 2. Runtime topology
 
-| Layer | Choice | Version |
-| :--- | :--- | :--- |
-| Language | Python | 3.11.16 |
-| Web | FastAPI on Starlette | 0.133 / 1.3 |
-| Server | uvicorn | 0.41 |
-| Templates | Jinja2, server-rendered | 3.1 |
-| CSS | ~150 hand-written lines | — |
-| JavaScript | **none** | — |
-| Data | sqlite3 (stdlib) | 3.53 |
+```text
+Employee browser
+      │
+      ▼
+FastAPI + Jinja AOS app (localhost:8077)
+      │
+      ├── registry.db             AOS role/owner metadata
+      ├── approvals.db            AOS append-only decisions
+      └── Hermes board DBs        tasks, runs, attachments, links
+                │
+                ▼
+        Hermes kanban dispatcher
+                │
+                ▼
+       isolated Hermes profiles
+```
 
-Three dependencies: `fastapi`, `uvicorn`, `jinja2`.
+### 2.1 Six pod boards
 
-**Deliberate omissions and why** — do not "fix" these without reading:
+Each pod has a separate SQLite board DB under the active Hermes home:
 
-- **No SPA/React.** Every interaction is a form POST plus redirect. There is no
-  client-side state to manage. Templates are ~800 lines; the React equivalent
-  would be 4,000+ for identical screens.
-- **No ORM.** The board schema belongs to Hermes and `hermes update` migrates
-  it. Models over a foreign schema break on their releases. AOS reads boards
-  read-only and writes via the `hermes kanban` CLI.
-- **No CSS framework.** Six screens.
-- **No auth library** — auth is not built yet (§7).
+```text
+$HERMES_HOME/kanban/boards/<board>/kanban.db
+```
+
+Boards:
+
+- `p1-growth`
+- `p2-access`
+- `p3-people`
+- `p4-quality`
+- `p5-research`
+- `p6-education`
+
+Board separation is the primary data boundary. Profile separation provides
+separate configuration, sessions, skills, and memory. It is not an operating
+system sandbox: profiles run as the same Windows user. Capability minimisation
+therefore matters. A profile without terminal, web, memory, or session search
+cannot use those routes through Hermes, but the host process itself is not a
+separate security principal.
+
+### 2.2 Technology stack
+
+Verified versions on the development workstation:
+
+| Layer | Version |
+| :--- | :--- |
+| Python | 3.11.16 |
+| FastAPI | 0.133.1 |
+| Starlette | 1.3.1 |
+| uvicorn | 0.41.0 |
+| Jinja2 | 3.1.6 |
+| SQLite | 3.53.1 |
+| python-multipart | 0.0.32 |
+
+There is no JavaScript build, SPA, ORM, or CSS framework. Forms POST and redirect;
+server-rendered templates own all UI state. `python-multipart` is required by
+FastAPI `Form` routes, although the repository does not yet have a dependency
+manifest. That missing manifest is a deployment gap.
+
+Current source size is approximately:
+
+- `aos.py`: 1,259 lines
+- `web.py`: 371 lines
+- `registry.py`: 261 lines
+- templates: 1,021 lines total
+
+### 2.3 Read and write policy
+
+AOS reads Hermes board DBs directly. Read-only connections are pooled per board
+to avoid Windows/antivirus connection-open overhead. Each query runs outside a
+long-lived transaction, so external dispatcher commits remain visible.
+
+Hermes CLI owns complex mutations:
+
+- create task;
+- assign profile;
+- link task provenance;
+- unblock;
+- dispatch.
+
+One narrow write bypasses the CLI: dismissing finished work changes only
+`tasks.status` to `archived`. Boards use WAL and the write connection has a
+five-second timeout. This reduced a roughly two-second CLI startup cost to a
+roughly 20–30 ms request. Do not generalise this exception to task creation,
+assignment, or run state without proving Hermes's invariants.
 
 ---
 
 ## 3. Data model
 
-Three stores. Only two are ours.
+AOS depends on three SQLite stores plus attachment files and profile logs.
 
-```
-~/.hermes/kanban/boards/<pod>/kanban.db   Hermes-owned. READ-ONLY from AOS.
-aos-app/registry.db                       ours: agents, ownership
-aos-app/approvals.db                      ours: signatures. Audit data.
-```
-
-### 3.1 Entity chain
-
-```
-AGENT   standing role: zone, guardrail, owner, signer, cadence. Never "runs".
-  └─< TASK    one commissioned unit of work. Links to agent via Hermes `tenant`.
-        ├─< RUN         one attempt. Many runs per task is normal.
-        ├─< ATTACHMENT  the deliverable
-        └── APPROVAL    0 or 1. Gates release.
+```text
+Hermes board DBs                 tasks, runs, attachments, task links
+registry.db                      role definitions and ownership
+approvals.db                     approval/rejection history
+board workspace files            artifact bytes being approved
+profile logs/errors.log           independent evidence-tool failure signal
 ```
 
-**Common misreading:** a task is not a run. One task may have several runs
-(attempt 1 `review_requested`, attempt 2 `completed`).
+### 3.1 Task is not run
 
-**`tasks.assignee` is a Hermes profile, not a person.** The human is the
-agent's *owner*, in `registry.db`. Different concepts, different stores.
+An **agent** is a standing role. A **task** is one commissioned unit of work. A
+**run** is one execution attempt. One task can have several runs and several
+attachments.
 
-### 3.2 registry.db
+Tasks link to roles through Hermes's native `tenant` field:
+
+```text
+agent-03a
+agent-12
+```
+
+`tasks.assignee` is a Hermes profile such as `pod-p1-growth`, never a human.
+Human responsibility lives in `registry.db`.
+
+### 3.2 Registry schema
 
 ```sql
-agents(agent_no PK, name, board, zone, delivery_box, is_agentic,
-       profile, guardrail, cadence, active)
-agent_owners(agent_no, user_id, role)      -- role: owner | countersigner | consumer
+agents(
+    agent_no PRIMARY KEY,
+    name,
+    board,
+    zone,
+    delivery_box,
+    is_agentic,
+    profile,
+    guardrail,
+    cadence,
+    brief_version,
+    active
+)
+
+agent_owners(
+    agent_no,
+    user_id,
+    role              -- owner | countersigner | consumer
+)
 ```
 
-`agent_no` is a string: `01`..`20`, with composites `03a`,`03b`, `07a`,`07b`,
-`07c`, `11a`,`11b`,`11c`. **25 active rows for 20 playbook roles.**
+Board access is derived from ownership rather than maintained as a second access
+map. Owners and countersigners receive pod visibility. Consumers are a narrower
+exception described in §4.2.
 
-### 3.3 approvals.db
+### 3.3 Approval schema
 
 ```sql
-approvals(id PK, board, task_id, agent_no, signer, signer_role,
-          decision, note, artifact_path, artifact_hash, signed_at)
+approvals(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    board TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    agent_no TEXT,
+    signer TEXT NOT NULL,
+    signer_role TEXT NOT NULL,
+    decision TEXT CHECK(decision IN ('approved','rejected')),
+    note TEXT,
+    artifact_hash TEXT NOT NULL,
+    signed_at INTEGER NOT NULL
+)
 ```
 
-`artifact_hash` is the sha256 of the exact reviewed bytes. A deliverable
-modified after signing fails verification — this is the point of the table.
+There is no `artifact_path` column and no one-approval-per-task constraint.
+Decisions form an append-only history. Current attachment identity is encoded in
+`artifact_hash`:
+
+```text
+attachment:<attachment_id>:sha256:<digest>
+```
+
+The latest matching decision for that attachment and those exact bytes controls
+release. A later approval may supersede a rejection. If the file bytes change,
+the new bytes are pending and require a new review.
+
+Legacy rows containing only a bare digest remain accepted when exactly one
+attachment on that task has those bytes. If multiple attachments match, the
+legacy decision is ambiguous and release fails closed.
 
 ---
 
-## 4. Enforcement — what the code refuses
+## 4. Identity and authorization
 
-These are code-level refusals with tests behind them. Do not weaken them.
+### 4.1 Development identity
 
-### 4.1 Pod isolation
+Authentication is not implemented. `current_user()` accepts `?as=<user>` or the
+POSTed `user` field in development. Outside `AOS_ENV=development`, each request
+fails with HTTP 500. The process itself can still start; it does not fail at
+startup.
 
-Each pod's board is a physically separate SQLite file. Authorization is a
-lookup performed **before any query touches disk**:
+This server must remain local until real authentication exists. A query
+parameter is not a defensible signing identity.
 
-```python
-if board not in boards_for(user):
-    raise PermissionError
-```
+### 4.2 Board authorization
 
-`boards_for()` is *derived* from agent ownership, so there is no separate
-access map that can drift from the roster.
+`boards_for(user)` is derived from registry ownership. A person sees boards
+where they own or countersign at least one agent. Signers can review but
+`creatable_agents()` excludes them unless they are also an owner, preserving the
+separation between commissioning and approval.
 
-### 4.2 Non-agentic roles cannot be given a model
+A consumer does not receive general board access. A consumer assigned to a
+specific agent may retrieve only that agent's already-released attachment.
 
-- `register()` refuses to attach a profile to a role marked non-agentic
-- `create_task()` assigns a profile only for agentic roles; non-agentic tasks
-  are left deliberately unassigned so no dispatcher claims them
-- `complete_by_human()` refuses to close a task belonging to an agentic role
+The intended invariant is authorization before task or artifact data is read.
+The task-detail route enforces this. Three lower-level helpers currently do not:
 
-This is what prevents Agent 07a's deterministic crisis gate from accidentally
-acquiring a model.
+- `sign()` reads the task before `_authorize()`;
+- `can_review()` reads the task without board authorization;
+- `attachment()` reads the task before its consumer/reviewer authorization path.
 
-### 4.3 Signature gates release
+These paths still apply signer/consumer checks before release, but they violate
+the documented authorize-before-read rule and may expose task existence through
+error behavior. Treat this as a current defect, not intended architecture.
 
-`kanban status: done` means *the worker finished*. It does not mean anyone
-signed.
+### 4.3 Redirect safety
 
-`deliverable_bytes()` refuses to return an unsigned Amber artifact **to anyone**,
-including the pod owner who commissioned it. Rejected artifacts are refused
-permanently.
-
-Rationale: a signature that is only an audit note gets skipped under deadline
-pressure. Gating release makes it structural.
-
-### 4.4 Signing authority ≠ visibility
-
-A countersigner sees the pods containing agents they sign, but owns nothing and
-can commission nothing. `creatable_agents()` excludes them.
-
-Rationale: if a signer can commission the work they later approve, the two roles
-collapse and the signature stops being independent.
-
-### 4.5 Amber without a signer is refused at creation
-
-Commissioning Amber work with no assigned signer would produce a deliverable
-that completes, fails the release gate, and can never be cleared. The form
-refuses with the reason. Currently affects **11b, 11c, 19**.
-
-### 4.6 Redirect whitelist
-
-`back_link()` validates against a whitelist of AOS's own route shapes. `Referer`
-is never used raw — turning an attacker-controlled header into a link is an open
-redirect.
+Navigation origin is carried through a `back` parameter. `_BACK_OK` accepts only
+known same-origin route shapes. Raw `Referer` values are never used directly, so
+POST redirects cannot become open redirects.
 
 ---
 
-## 5. Agent roster (live state)
+## 5. Task lifecycle and employee UX
 
-25 active rows. `own` and `sign` values are **placeholders**, not real people.
+### 5.1 Creation
 
-| # | Name | Pod | Zone | Delivery | Agentic | Profile | Signer |
-| :-- | :-- | :-- | :-- | :-- | :-: | :-- | :-- |
+`create_task()` performs, in order:
+
+1. board authorization;
+2. agent existence, board, active-state, and owner checks;
+3. refusal of Amber work with no named countersigner;
+4. Agent 03 upstream-gate check where applicable;
+5. standing-rule injection where configured;
+6. Hermes task creation with the agent tenant;
+7. provenance links for gated downstream work;
+8. assignment only when the role is agentic;
+9. immediate best-effort dispatch.
+
+If immediate dispatch fails, the task remains created and assigned so the normal
+roughly 60-second gateway tick can pick it up. Non-agentic roles are left
+unassigned so no worker can claim them.
+
+### 5.2 Standing prompts
+
+Agent-specific standing rules live in `STANDING_RULES`, keyed by agent number.
+They are prepended inside `create_task()` and cannot be omitted by a busy
+requester. Agents without an entry receive the user's brief unchanged.
+
+The registry `guardrail` remains queryable metadata. For 03a it is also included
+with the standing instructions sent to the worker.
+
+### 5.3 Plain-language status
+
+The authoritative Hermes statuses are mapped as follows:
+
+| Board status | Employee label |
+| :--- | :--- |
+| `triage`, `todo`, `scheduled`, `ready` | Not started |
+| `running` | Working on it now |
+| `review`, `done` | Finished |
+| `blocked` | Stopped |
+| `archived` | Archived |
+
+Unknown status names are shown honestly with the raw board value. Do not invent
+aliases such as `in_progress`; Hermes uses `running`.
+
+### 5.4 Home and dismissal
+
+`my_work()` groups an owner's tasks across pods into running, waiting, and
+finished. Running and waiting lists are uncapped. The home page shows the eight
+most recent finished items.
+
+**Done** calls `dismiss()` and archives rather than deletes. It refuses when:
+
+- the task is unfinished;
+- the user does not own the role;
+- the output is still awaiting required review.
+
+Task, run, attachment, and approval history remain available after archive.
+
+### 5.5 Blocked work
+
+Blocked tasks do not restart themselves. The UI shows them separately with their
+last failure, and authorized owners can invoke Hermes unblock/retry. Shared model
+quota exhaustion is a known operational cause of silent worker failure.
+
+---
+
+## 6. Artifact review and release
+
+### 6.1 File states
+
+Each substantive current attachment resolves to one state:
+
+- `pending`
+- `approved`
+- `rejected`
+
+Task-level release uses the weakest current substantive attachment state,
+reporting rejection before pending. Every substantive current attachment must be
+approved for an Amber task to release.
+
+Bare placeholders—empty files, `null`, `{}`, and `[]`—are not substantive and
+do not hold a real document hostage. This check is content-specific; a broad
+minimum-size threshold would incorrectly discard short legitimate documents.
+
+### 6.2 Review versus release
+
+The qualified signer reads pending or rejected bytes through an explicit review
+path:
+
+```text
+/file/{board}/{task_id}/{att_id}/review-raw
+```
+
+This is separate from ordinary release. A marketer cannot download an unsigned
+Amber artifact. The signer can read it only to decide, sees the SHA-256, and
+posts Approve or Reject from the artifact preview page.
+
+Ordinary preview and download use `attachment()` without review mode and remain
+closed until current bytes are approved. An unsigned owner receives the
+`Under review` page rather than raw JSON.
+
+### 6.3 Exact-byte binding
+
+The review form carries the hash shown during preview. `sign()` recomputes the
+file hash and refuses if it changed between preview and decision. It also
+verifies that the path is an attachment of that task and stays beneath that
+board's root.
+
+This prevents:
+
+- approving a file the reviewer never opened;
+- swapping bytes after preview;
+- one approval releasing a sibling attachment with identical bytes;
+- replacing approved bytes without returning to pending.
+
+### 6.4 Evidence-tool integrity hold
+
+`run_integrity()` reads the latest run window and correlates it with the assigned
+profile's `logs/errors.log`. Failures from `web_search`, `web_extract`, or
+`web_fetch` mark the run degraded independently of the worker's summary.
+
+A degraded run is held for human review even if the model reports success. Once
+a qualified signer approves the exact artifact, the warning clears; the hold
+exists to require independent review, not to veto it.
+
+Current limitations:
+
+- only failures are recorded; successful source opens are not proven;
+- one failed call marks a partially successful run degraded;
+- log timestamp parsing is an operational heuristic, not structured telemetry;
+- a degraded **Green** task can be held even though Green roles normally have no
+  countersigner, creating an uncleared state. This needs a named escalation path
+  or a narrower policy before degraded Green runs occur in production.
+
+The UI must describe this as incomplete source access, not proof that every
+source was unreachable.
+
+### 6.5 Current signing metadata defect
+
+The web signing route currently passes the agent zone (`"amber"`) as
+`signer_role`. The authorization decision still comes from registry
+`countersigner` ownership, but the stored role label is semantically wrong. A
+future migration should record `countersigner` or, preferably, the signer's
+actual qualification at signing time.
+
+---
+
+## 7. Agent 03 implementation
+
+### 7.1 03a — evidence table
+
+03a is Amber and runs in `pod-p1-growth`. Every task receives standing rules that
+require:
+
+- research only, no marketing or patient-facing prose;
+- citations only from sources opened during that run;
+- DOI or PMID and a short supporting quotation per row;
+- failed lookups under `COULD NOT VERIFY`;
+- no reconstruction from model memory if sources cannot be reached;
+- the KURI ceiling during evidence gathering.
+
+These instructions improve model behavior. The independent integrity hold and
+human signature remain the controls.
+
+### 7.2 Human gate
+
+`GATED_STAGES` maps `03b` to `03a`. `gate_state()` finds current approved 03a
+artifacts. If none exist, `create_task()` raises `GateNotPassed`, including when
+the caller bypasses the UI.
+
+When the gate is open, `_claim_set_body()` prepends:
+
+- the exact approved artifact text;
+- upstream task and filename;
+- signer;
+- SHA-256 provenance;
+- instructions not to add or strengthen claims.
+
+Task links record upstream/downstream provenance as data.
+
+### 7.3 03b — constrained drafting profile
+
+03b is agentic in the live registry and runs in `p1-drafting`. Its enabled CLI
+toolsets are:
+
+- `clarify`
+- `file`
+- `kanban`
+- `skills`
+- `todo`
+
+It has no web, browser, terminal, code execution, memory, session search,
+delegation, or computer-use tool. It therefore cannot browse around the approved
+claim set through Hermes capabilities.
+
+### 7.4 Seed mismatch
+
+The live registry reflects the approved decision in `DECISIONS.md`: 03b is an
+agent using `p1-drafting`. `seed_registry.py` still defines 03b as `seat` with no
+profile. Running the seed would regress the live role.
+
+This is a reproducibility defect. Update the seed before rebuilding any registry.
+Do not treat the current live DB as a substitute for a correct seed.
+
+---
+
+## 8. Agent registry snapshot
+
+Live registry totals:
+
+- 25 active rows representing 20 playbook roles;
+- 14 Amber, 11 Green;
+- 13 agentic, 12 non-agentic;
+- delivery boxes: 5 `n8n+agent`, 8 `agent`, 6 `n8n`, 6 `seat`.
+
+| # | Role | Board | Zone | Delivery | Agentic | Profile | Countersigner |
+| :-- | :-- | :-- | :-- | :-- | :--: | :-- | :-- |
 | 01 | SEO Technical Auditor | p1-growth | green | n8n+agent | yes | pod-p1-growth | — |
 | 02 | Keyword & Content Strategist | p1-growth | green | agent | yes | pod-p1-growth | — |
-| 03a | Clinical Evidence Table | p1-growth | amber | agent | yes | pod-p1-growth | clinical director |
-| 03b | Clinical Content Drafter | p1-growth | amber | agent | yes | **p1-drafting** | clinical director |
+| 03a | Clinical Evidence Table | p1-growth | amber | agent | yes | pod-p1-growth | u_clinical_director |
+| 03b | Clinical Content Drafter | p1-growth | amber | agent | yes | p1-drafting | u_clinical_director |
 | 04 | GA4 & Funnel Analyst | p1-growth | green | n8n | no | — | — |
-| 05 | Local SEO & Reputation | p1-growth | amber | n8n+agent | yes | pod-p1-growth | clinical director |
-| 06 | Paid Media Operator | p1-growth | amber | seat | no | — | clinical director |
-| 07a | Risk-Language Gate | p2-access | amber | n8n | **no** | — | clinical director |
+| 05 | Local SEO & Reputation | p1-growth | amber | n8n+agent | yes | pod-p1-growth | u_clinical_director |
+| 06 | Paid Media Operator | p1-growth | amber | seat | no | — | u_clinical_director |
+| 07a | Risk-Language Gate | p2-access | amber | n8n | no | — | u_clinical_director |
 | 07b | Enquiry Router | p2-access | green | n8n | no | — | — |
-| 07c | Triage Script Curator | p2-access | amber | n8n+agent | yes | pod-p2-access | clinical director |
+| 07c | Triage Script Curator | p2-access | amber | n8n+agent | yes | pod-p2-access | u_clinical_director |
 | 08 | Booking & No-Show Analyst | p2-access | green | n8n | no | — | — |
-| 09 | Referral Network Coordinator | p2-access | amber | agent | yes | pod-p2-access | clinical director |
+| 09 | Referral Network Coordinator | p2-access | amber | agent | yes | pod-p2-access | u_clinical_director |
 | 10 | Job Analysis & JD Writer | p3-people | green | agent | yes | pod-p3-people | — |
 | 11a | Recruitment Kit Builder | p3-people | green | agent | yes | pod-p3-people | — |
-| 11b | CV Extractor | p3-people | amber | n8n | no | — | **none** |
-| 11c | Criteria Flagger | p3-people | amber | n8n | no | — | **none** |
+| 11b | CV Extractor | p3-people | amber | n8n | no | — | — |
+| 11c | Criteria Flagger | p3-people | amber | n8n | no | — | — |
 | 12 | Onboarding & Documentation | p3-people | green | n8n+agent | yes | pod-p3-people | — |
 | 13 | Workforce & L&D Architect | p3-people | green | seat | no | — | — |
-| 14 | SOP & Pathway Documentation | p4-quality | amber | agent | yes | pod-p4-quality | clinical director |
-| 15 | Competency & OSCE Materials | p4-quality | amber | seat | no | — | clinical director |
-| 16 | Quality Indicator Reporting | p4-quality | amber | n8n+agent | yes | pod-p4-quality | clinical director |
+| 14 | SOP & Pathway Documentation | p4-quality | amber | agent | yes | pod-p4-quality | u_clinical_director |
+| 15 | Competency & OSCE Materials | p4-quality | amber | seat | no | — | u_clinical_director |
+| 16 | Quality Indicator Reporting | p4-quality | amber | n8n+agent | yes | pod-p4-quality | u_clinical_director |
 | 17 | Literature & Evidence | p5-research | green | agent | yes | pod-p5-research | — |
-| 18 | Protocol & Analysis Assistant | p5-research | amber | seat | no | — | clinical director |
-| 19 | Curriculum & Materials | p6-education | amber | seat | no | — | **none** |
+| 18 | Protocol & Analysis Assistant | p5-research | amber | seat | no | — | u_clinical_director |
+| 19 | Curriculum & Materials | p6-education | amber | seat | no | — | — |
 | 20 | Admissions & Parent Comms | p6-education | green | seat | no | — | — |
 
-**Totals:** 14 amber · 11 green · 13 agentic · 6 seat · 11 n8n-involved.
+Amber roles 11b, 11c, and 19 have no countersigner and are refused at task
+creation until one is assigned.
 
-**13 of 25 roles have no AI worker** (6 deterministic pipelines, 7 human seats).
-They still have tasks, deliverables, and signatures.
+Composite families:
 
-### 5.1 Composite decompositions
-
-```
-03  Clinical Content    03a evidence  →  [HUMAN GATE]  →  03b drafting
-07  Enquiry Triage      07a risk gate →  [HUMAN GATE]  →  07b router → 07c curator
-11  Recruitment         11a kit       →  [HUMAN GATE]  →  11b extract → 11c flag
+```text
+03  evidence → HUMAN GATE → constrained drafting
+07  deterministic risk gate → administrative router → log-based curator
+11  pre-candidate kit → fixed extraction → published-criteria flags
 ```
 
-The gate is the control. Rendering the stages as unrelated agents hides it,
-which is a governance failure rather than a cosmetic one.
-
-Zones are **mixed within a family** (07 is amber/green/amber). Never collapse a
-family to a single zone badge.
-
-### 5.2 The p1-drafting sandbox
-
-Agent 03b was changed from human-seat to agentic on CEO instruction
-(`DECISIONS.md`). It runs in a dedicated Hermes profile with **4 tools**: file,
-skills, todo, clarify.
-
-Removed: web, browser, terminal, code_execution, computer_use, delegation, cron,
-image_gen, tts, **memory**, **session_search**, vision.
-
-`memory` and `session_search` are removed deliberately — both are routes to
-information outside the approved claim set.
-
-**Why tool removal and not a prompt:** a prompt is a request; tool absence is a
-fact. With no browser you can *prove* it never searched. Isolation must be
-enforced outside the model.
-
-Guardrail additionally requires claim-level traceability: every clinical
-assertion cites which approved claim it rests on, plus explicit CLAIMS USED /
-NOT USED / GAPS sections.
+Zones may differ within a family. Never collapse a family to one badge.
 
 ---
 
-## 6. Web layer
+## 9. Web layer
 
-`web.py`, 286 lines, 11 routes.
+`web.py` currently exposes 13 application routes:
 
 | Method | Route | Purpose |
 | :-- | :-- | :-- |
-| GET | `/` | review queue: needs-your-signature, unsigned elsewhere, blocked |
-| GET | `/queue` | queue health: age, breakdown by signer/agent, expected load |
-| GET | `/new` | task creation — scoped when arrived from an agent page |
-| POST | `/new` | create |
-| GET | `/task/{board}/{id}` | review: deliverables, run history, sign/reject |
-| GET | `/agent/{agent_no}` | agent detail: guardrail, owners, runs, tasks |
-| GET | `/family/{family_no}` | composite pipeline with the gate rendered between stages |
-| GET | `/file/.../{att_id}` | deliverable preview (gated) |
-| GET | `/file/.../raw` | download (gated) |
-| POST | `/sign/{board}/{id}` | approve or reject |
-| POST | `/unblock/{board}/{id}` | retry a blocked task |
+| GET | `/` | Employee work, signature queue, oversight, blocked tasks, agent list |
+| GET | `/queue` | Queue age, signer/agent breakdown, estimated signing load |
+| GET | `/new` | Scoped task form and gate state |
+| POST | `/new` | Validate, create, assign, and dispatch |
+| GET | `/task/{board}/{task_id}` | Task status, files, runs, review state |
+| GET | `/agent/{agent_no}` | Agent metadata, guardrail, tasks, current work |
+| GET | `/family/{family_no}` | Composite stages and human gates |
+| GET | `/file/{board}/{task_id}/{att_id}` | File preview or Under review page |
+| GET | `/file/{board}/{task_id}/{att_id}/review-raw` | Qualified signer's pending-byte read |
+| GET | `/file/{board}/{task_id}/{att_id}/raw` | Released download |
+| POST | `/sign/{board}/{task_id}` | Approve or reject exact reviewed bytes |
+| POST | `/dismiss/{board}/{task_id}` | Non-destructive archive |
+| POST | `/unblock/{board}/{task_id}` | Retry blocked work |
 
-### 6.1 User flows
+Approve/Reject lives on the artifact preview, not the task summary. This keeps
+the decision adjacent to the bytes and checksum being signed.
 
-**Commission →** `/` or `/agent/X` → New task → brief + priority → created,
-profile assigned only if agentic.
-
-**Agent work →** Hermes dispatcher claims → runs → attaches deliverable →
-`status: done`. Not released.
-
-**Review →** signer opens `/` → "Needs your signature" → opens task → reads
-deliverable → approve/reject with note → sha256 recorded → returns to origin.
-
-**Consume →** a `consumer` (e.g. content writer for 03a) may download only
-signed deliverables of named agents. Owns nothing, signs nothing, has no board.
-
-**Seat work →** *not built.* The 7 seat roles cannot yet upload.
-
-### 6.2 Conventions
-
-- Explanation belongs where a decision is made (task creation, signing), not
-  where a list is scanned.
-- `?back=` carries origin through navigation and POSTs; validated (§4.6).
-- Guardrails are queryable data, never prose in a task body.
+The app has no client-side state. Navigation preserves a validated `back` path
+through forms and redirects.
 
 ---
 
-## 7. Not built
+## 10. Queue health and review capacity
 
-| Item | State |
-| :-- | :-- |
-| **Authentication** | `?as=<user>` query param. `current_user()` is the single swap point. **Refuses to start unless `AOS_ENV=development`.** |
-| Seat upload | 7 roles cannot record work |
-| Automated tests | none — verified by hand. Largest quality gap. |
-| Deployment | single workstation, `run.sh` (nohup + pidfile) |
-| Real identities | all placeholders |
-| n8n pipelines | 11 roles depend on them |
-| Telegram signing | designed, deferred (`references/architecture.md`) |
+`unsigned_amber()` produces the review queue and age. `queue_health()` groups it
+by signer and agent. `signing_load()` exposes expected weekly load from cadence
+metadata.
 
-### 7.1 Auth — open decision
+`REVIEW_SLA_DAYS` is currently 10. Despite comments referring to ten **working**
+days, implementation compares elapsed calendar days. Either rename the metric or
+implement a working-day calculation before presenting it as an SLA.
 
-Options considered: Google Workspace SSO · email magic link · Telegram OTP ·
-local password table (bcrypt/argon2 + server-side sessions).
+Operational assumptions:
 
-**The deciding question is not technical:** must a Talenta AOS signature be
-defensible to an outside reviewer (accreditor, PDP audit, complaint)? If yes,
-identity must be organisation-controlled and revocable on offboarding.
-
-**Known accepted risk:** a password proves knowledge of a secret, not the
-presence of a particular professional. Shared workstations make this real.
-Mitigation would be TOTP on signers only. Currently accepted, not solved.
-
-If built: store `qualification` (Sp.KJ / Ners / Psikolog Klinis) per user and
-record it on the signature. What the signer was qualified as *at the time*
-cannot be reconstructed later, and it is what an accreditor asks for.
+- only 3–4 people may be qualified to sign clinical work;
+- qualifications are not interchangeable;
+- a queue aging for two weeks at low volume usually means poor routing or
+  visibility rather than excessive standards;
+- if review capacity is exceeded, throttle agents rather than release unsigned
+  work.
 
 ---
 
-## 8. Operational context
+## 11. Testing
 
-- **Signers:** 3–4 people organisation-wide are qualified to countersign
-  clinical claims. Not interchangeable — clinical claims need psychiatric
-  judgement, triage scripts need crisis competence, pathway docs may suit a
-  Quality lead. Some agents may have exactly one eligible signer and no cover.
-- **Load:** ~4 Amber items/week from P1 alone; higher across all pods. A queue
-  reaching two weeks at that volume indicates invisibility, not overload.
-- **Throttle, don't loosen.** If the review queue grows two weeks running, slow
-  the agents. An unreviewed draft that ships is worse than one never written.
-- **Deployment target:** Hostinger VPS (separate product from their shared
-  hosting, which cannot run AOS). Tailscale or Cloudflare Tunnel for pilot
-  access — no open ports.
-- **Do not expose AOS publicly before auth exists.** 11b/11c handle candidate
-  CVs — personal data under the PDP Law.
+The suite uses stdlib `unittest`:
+
+```bash
+python -m unittest discover -s tests
+```
+
+Last verified result: **46 tests passing**.
+
+Tests use temporary:
+
+- board SQLite DBs;
+- registry DB;
+- approvals DB;
+- artifact filesystem;
+- profile error logs.
+
+No test calls or emulates an LLM. Tests cover authorization, approval binding,
+tamper detection, rejection state, per-attachment release, reviewer preview,
+Agent 03 gate enforcement, standing-rule injection, integrity holds, immediate
+dispatch, plain-language statuses, archive behavior, redirect safety, and the
+main HTTP paths.
+
+The test suite does not replace a live model-output review. It proves structural
+controls, not citation accuracy or writing quality.
 
 ---
 
-## 9. Repository rules
+## 12. Operational behavior
 
-- **Never commit `*.db`** — `approvals.db` is audit data
-- **Never commit `artifacts/`** — deliverables may contain organisational data
-- **No patient-identifiable data anywhere in this repo** — Red Zone item 4
-- Authorization is enforced in code, never by prompting a model
-- `DECISIONS.md` records guardrail/zone/signer changes: contemporaneous,
-  attributed, in version control. It is a record, not a signature — real
-  sign-off lives in `approvals.db` bound to an artifact hash.
+### 12.1 Server lifecycle
+
+```bash
+./run.sh
+./stop.sh
+```
+
+`run.sh` starts uvicorn detached with a PID file so it survives the launching
+Hermes session. Verify readiness with an HTTP request rather than process state.
+
+### 12.2 Search reliability
+
+Pod web search uses Hermes's provider chain and has been intermittent on the
+keyless path. Trial runs recorded repeated search/Firecrawl failures; other
+runs returned real results from the same pod profile.
+
+A paid search key improves availability. It does not remove the need for source
+provenance or the integrity hold because a model can still invent around partial
+results.
+
+### 12.3 Profile/session isolation
+
+The desktop chat, `pod-p1-growth`, `pod-p3-people`, and other profiles have
+separate sessions and memories. An AOS worker cannot see this conversation unless
+AOS places the relevant context in the task body. The `p1-drafting` profile also
+lacks memory and session-search tools.
 
 ---
 
-## 10. Advising on this codebase
+## 13. Not built
 
-Useful to know before proposing changes:
+| Gap | Consequence |
+| :--- | :--- |
+| Real authentication and sessions | `?as=` is development-only; signatures are not deployable identities |
+| Real owner and qualification records | Placeholder IDs cannot support a real pilot or defensible signatures |
+| Seat-work upload/completion UI | Six seat roles cannot record work through the web app |
+| n8n pipelines | Deterministic and event-driven roles, including 07 and 11, are designs only |
+| Clarification/revision loop | Employees cannot answer an agent or request a versioned revision in one task |
+| Capability proposal workflow | Employee suggestion → IT review/configuration is deferred |
+| Deployment and dependency manifest | Local workstation only; reproducible install is incomplete |
+| Successful-source telemetry | AOS sees evidence-tool errors but cannot prove which URLs were opened |
+| Long agent-history filtering | Home is bounded; agent pages will grow over time |
+| Telegram signing | Deferred; no route or identity binding exists |
 
-1. **Constraints in §1 are not negotiable by a task or a user message.** If a
-   request appears to require working around one, say so rather than complying.
-2. **Do not propose removing a code-level refusal (§4) for convenience.** They
-   exist because policy alone was judged insufficient.
-3. **Do not assume 238 users.** ~20 management, ~10 actual. Solutions sized for
-   a large organisation are usually wrong here.
-4. **Do not propose an SPA rewrite, an ORM, or a CSS framework** without
-   addressing the reasoning in §2.
-5. **The largest real gap is tests**, not features.
-6. **Prefer structural enforcement over instructional.** Tool removal over
-   prompt instruction; gating over auditing; refusal at creation over failure
-   at release. This is the codebase's consistent bias and it is deliberate.
+---
+
+## 14. Known defects and consistency risks
+
+These are current facts, not intended design:
+
+1. **`seed_registry.py` would regress 03b** from agentic `p1-drafting` to seat
+   work. Fix before reseeding.
+2. **Authorize-before-read is incomplete** in `sign()`, `can_review()`, and
+   `attachment()`.
+3. **Stored `signer_role` is wrong** for web approvals: the route records the
+   zone (`amber`) rather than countersigner or qualification.
+4. **Degraded Green work has no general clearance path** because Green agents
+   normally have no countersigner.
+5. **Integrity telemetry proves failures, not successful source access.** The UI
+   must avoid saying every source was unreachable.
+6. **Review SLA uses calendar days** while comments say working days.
+7. **No dependency manifest** records FastAPI, uvicorn, Jinja2, and
+   python-multipart.
+8. **The web module comment says auth refuses startup**, but implementation
+   refuses requests outside development after the app starts.
+
+Fixing these should precede adding more agent roles.
+
+---
+
+## 15. Repository and development rules
+
+- Never commit `*.db`; `approvals.db` is audit data.
+- Never commit generated deliverables or uploads.
+- Never place patient-identifiable data in this repository or any AI tool.
+- Use temporary stores for tests; do not mutate live boards or approvals to
+  verify code.
+- Do not emulate LLM responses in tests.
+- Preserve exact identifiers, attachment hashes, and signer identity.
+- Record guardrail, zone, signer, or constraint changes in `DECISIONS.md`.
+- Do not commit or push unless the user explicitly requests it.
+
+When advising on AOS:
+
+1. Load the `aos` skill first.
+2. Prefer structural enforcement over model instruction.
+3. Keep employee briefs short by placing universal rules in the role.
+4. Keep ordinary Green workflows low-friction.
+5. Make warnings precise enough that staff do not learn to ignore them.
+6. Never weaken a release gate to solve queue capacity; improve routing,
+   batching, telemetry, or reviewer assignment instead.

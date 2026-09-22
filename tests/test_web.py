@@ -16,11 +16,16 @@ class WebPathsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # Board connections are pooled; a handle to a previous test's
+        # temp dir must not survive into this one.
+        aos._close_pool()
+        self.addCleanup(aos._close_pool)
         self.root = Path(self.tmp.name)
         for target, name, value in [
             (R, 'REGISTRY_DB', self.root / 'registry.db'),
             (aos, 'APPROVALS_DB', self.root / 'approvals.db'),
             (aos, 'BOARDS', self.root / 'boards'),
+            (aos, 'PROFILES', self.root / 'profiles'),
             (web, 'AOS_ENV', 'development'),
         ]:
             p = patch.object(target, name, value)
@@ -74,6 +79,319 @@ class WebPathsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('Reviewable output', response.text)
 
+    def test_home_shows_the_users_actual_work_not_just_empty_queues(self):
+        self.add_file()
+        con = sqlite3.connect(aos.BOARDS / 'people' / 'kanban.db')
+        con.execute("UPDATE tasks SET status='done', completed_at=1 WHERE id='task'")
+        con.execute("""INSERT INTO tasks (id,title,body,status,priority,assignee,tenant,created_at)
+                       VALUES ('running','Drafting JDs now','b','running',3,'p','agent-10',1)""")
+        con.execute("""INSERT INTO tasks (id,title,body,status,priority,assignee,tenant,created_at)
+                       VALUES ('old','Archived clutter','b','archived',3,'p','agent-10',1)""")
+        con.commit()
+        con.close()
+        page = self.client.get('/?as=owner')
+        self.assertIn('Drafting JDs now', page.text)   # in progress, visible
+        self.assertIn('Example work', page.text)       # finished, visible
+        self.assertNotIn('Archived clutter', page.text)  # archived, hidden
+
+    def test_archived_tasks_are_hidden_from_the_agent_view(self):
+        con = sqlite3.connect(aos.BOARDS / 'people' / 'kanban.db')
+        con.execute("""INSERT INTO tasks (id,title,body,status,priority,assignee,tenant,created_at)
+                       VALUES ('old','CONCURRENCY-TEST-A','b','archived',3,'p','agent-10',1)""")
+        con.commit()
+        con.close()
+        page = self.client.get('/agent/10?as=owner')
+        self.assertNotIn('CONCURRENCY-TEST-A', page.text)
+
+    def test_every_real_kanban_status_has_plain_language(self):
+        # The authoritative set, from `hermes kanban list --status`.
+        # A status missing here renders as "Unknown" to the user, which is
+        # what happened when this map guessed 'in_progress' instead of
+        # reading the CLI's actual vocabulary.
+        for status in ['archived', 'blocked', 'done', 'ready', 'review',
+                       'running', 'scheduled', 'todo', 'triage']:
+            with self.subTest(status=status):
+                p = aos.progress({'status': status})
+                self.assertNotEqual(p['label'], 'Unknown')
+                self.assertNotIn('Board status', p['detail'])
+        self.assertTrue(aos.progress({'status': 'running'})['running'])
+        self.assertTrue(aos.progress({'status': 'done'})['finished'])
+        self.assertTrue(aos.progress({'status': 'blocked'})['stopped'])
+
+    def test_task_page_shows_only_the_request_not_worker_instructions(self):
+        con = sqlite3.connect(aos.BOARDS / 'growth' / 'kanban.db')
+        con.execute("UPDATE tasks SET body=? WHERE id='task'", (
+            '## DELIVERY REQUIREMENT\nKeep this internal.\n\n## THE REQUEST\n\nFind adolescent TMS evidence.',))
+        con.commit()
+        con.close()
+
+        page = self.client.get('/task/growth/task?as=marketer')
+
+        self.assertIn('Find adolescent TMS evidence.', page.text)
+        self.assertNotIn('Keep this internal.', page.text)
+
+    def test_completed_task_without_a_file_shows_missing_deliverable(self):
+        con = sqlite3.connect(aos.BOARDS / 'growth' / 'kanban.db')
+        con.execute("UPDATE tasks SET status='done', completed_at=1 WHERE id='task'")
+        con.commit()
+        con.close()
+
+        page = self.client.get('/task/growth/task?as=marketer')
+
+        self.assertIn('Missing deliverable', page.text)
+        self.assertIn('cannot be reviewed or released', page.text)
+
+    def test_legacy_back_link_is_canonicalized_and_kept_in_the_session(self):
+        response = self.client.get(
+            '/task/growth/task?as=marketer&back=/agent/03a', follow_redirects=False)
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers['location'], '/task/growth/task?as=marketer')
+
+        page = self.client.get(response.headers['location'])
+        self.assertIn('href="/agent/03a?as=marketer"', page.text)
+        self.assertNotIn('back=', page.text)
+
+    def test_sign_returns_to_the_task_from_a_session_return_path(self):
+        path = self.add_file('growth')
+        self.client.get('/file/growth/task/1?as=reviewer', headers={
+            'referer': 'http://testserver/task/growth/task?as=reviewer'})
+
+        response = self.client.post('/sign/growth/task', data={
+            'user': 'reviewer', 'decision': 'approved', 'note': 'Checked source and scope.',
+            'artifact': str(path),
+            'expected_hash': hashlib.sha256(path.read_bytes()).hexdigest(),
+        }, follow_redirects=False)
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers['location'], '/task/growth/task?as=reviewer')
+
+    def test_unreleased_file_returns_to_the_task_with_a_popup(self):
+        self.add_file('growth')
+        page = self.client.get(
+            '/file/growth/task/1?as=marketer&back=/task/growth/task',
+            follow_redirects=True)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('<dialog open', page.text)
+        self.assertIn('Not released yet', page.text)
+        # The popup names why access is unavailable without opening a raw error page.
+        self.assertIn('reviewer', page.text)
+
+    def test_empty_artifacts_are_not_offered_for_signature(self):
+        # Workers sometimes attach a stub ('null', 0 bytes) beside the real
+        # deliverable. Signing that attests to nothing, and requiring it
+        # blocks release of the genuine file.
+        junk = aos.BOARDS / 'growth' / 'junk.md'
+        junk.write_text('null', encoding='utf-8')
+        con = sqlite3.connect(aos.BOARDS / 'growth' / 'kanban.db')
+        con.execute('INSERT INTO task_attachments VALUES (?,?,?,?,?,?,?,?)',
+                    (2, 'task', 'junk.md', str(junk), 'text/markdown',
+                     junk.stat().st_size, 'worker', 1))
+        con.commit()
+        con.close()
+        real = self.add_file('growth')
+
+        files = aos.deliverables('reviewer', 'growth', 'task')
+        self.assertTrue(all(f.get('substantive') for f in files if f['id'] == 1))
+        self.assertFalse(next(f for f in files if f['id'] == 2)['substantive'])
+
+        # Approving the real file releases the task; the stub does not block it.
+        aos.sign('growth', 'task', 'reviewer', 'countersigner', 'approved',
+                 str(real), expected_hash=hashlib.sha256(real.read_bytes()).hexdigest())
+        self.assertTrue(aos.signature_state('growth', 'task')['approved'])
+
+    def make_run(self, started, ended, board='growth', task='task'):
+        con = sqlite3.connect(aos.BOARDS / board / 'kanban.db')
+        con.execute("""INSERT INTO task_runs (task_id,profile,status,outcome,summary,
+                       started_at,ended_at) VALUES (?,?,?,?,?,?,?)""",
+                    (task, 'pod-test', 'done', 'completed',
+                     'Verified 17 sources against PubMed.', started, ended))
+        con.commit()
+        con.close()
+
+    def write_log(self, lines):
+        d = aos.PROFILES / 'pod-test' / 'logs'
+        d.mkdir(parents=True, exist_ok=True)
+        (d / 'errors.log').write_text('\n'.join(lines), encoding='utf-8')
+
+    def test_tool_failures_during_a_run_are_detected_from_the_log(self):
+        import time as _t
+        start = int(_t.time()) - 300
+        end = int(_t.time()) - 60
+        stamp = _t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(start + 30))
+        self.make_run(start, end)
+        self.write_log([
+            f"{stamp},100 WARNING agent.tool_executor: Tool web_search returned error (1.1s): 403",
+            f"{stamp},200 WARNING agent.tool_executor: Tool web_search returned error (1.0s): 403",
+            f"{stamp},300 WARNING agent.tool_executor: Tool web_extract returned error (0.9s): 403",
+        ])
+        health = aos.run_integrity('growth', 'task')
+        self.assertTrue(health['checked'])
+        self.assertTrue(health['degraded'])
+        self.assertEqual(health['failures']['web_search'], 2)
+        self.assertEqual(health['failures']['web_extract'], 1)
+
+    def test_a_clean_run_is_not_flagged(self):
+        import time as _t
+        self.make_run(int(_t.time()) - 300, int(_t.time()) - 60)
+        self.write_log(['2020-01-01 00:00:00,000 WARNING something unrelated'])
+        health = aos.run_integrity('growth', 'task')
+        self.assertTrue(health['checked'])
+        self.assertFalse(health['degraded'])
+
+    def test_missing_log_is_unverified_not_clean(self):
+        import time as _t
+        self.make_run(int(_t.time()) - 300, int(_t.time()) - 60)
+        health = aos.run_integrity('growth', 'task')
+        self.assertFalse(health['checked'])
+        self.assertFalse(health['degraded'])
+        self.assertIn('could not', health['reason'].lower())
+
+    def test_degraded_output_is_not_released_until_a_human_signs(self):
+        import time as _t
+        start, end = int(_t.time()) - 300, int(_t.time()) - 60
+        stamp = _t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(start + 30))
+        self.make_run(start, end)
+        self.write_log([f"{stamp},100 WARNING agent.tool_executor: "
+                        f"Tool web_search returned error (1.1s): 403"])
+        path = self.add_file('growth')
+        # Even the owner cannot collect it: the run could not reach its
+        # sources, so a person must look before anyone uses it.
+        with self.assertRaises(aos.NotSigned):
+            aos.attachment('marketer', 'growth', 'task', '1')
+        state = aos.signature_state('growth', 'task')
+        self.assertFalse(state['approved'])
+        self.assertIn('unreachable', state['reason'].lower())
+
+    def test_source_warning_clears_after_qualified_human_approves(self):
+        import time as _t
+        start, end = int(_t.time()) - 300, int(_t.time()) - 60
+        stamp = _t.strftime('%Y-%m-%d %H:%M:%S', _t.localtime(start + 30))
+        self.make_run(start, end)
+        self.write_log([f"{stamp},100 WARNING agent.tool_executor: "
+                        f"Tool web_search returned error (1.1s): 403"])
+        path = self.add_file('growth')
+
+        before = self.client.get('/task/growth/task?as=marketer')
+        self.assertIn('could not reach its sources', before.text)
+
+        aos.sign('growth', 'task', 'reviewer', 'countersigner', 'approved',
+                 str(path), expected_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        after = self.client.get('/task/growth/task?as=marketer')
+        self.assertNotIn('could not reach its sources', after.text)
+        self.assertIn('Approved', after.text)
+
+    def test_dismiss_is_fast_and_does_not_shell_out(self):
+        # Archiving via the Hermes CLI costs ~2s of interpreter startup for
+        # a one-field status change. A button that takes 3 seconds gets
+        # pressed twice.
+        self.add_file()
+        con = sqlite3.connect(aos.BOARDS / 'people' / 'kanban.db')
+        con.execute("UPDATE tasks SET status='done', completed_at=1 WHERE id='task'")
+        con.commit()
+        con.close()
+
+        with patch.object(aos, '_kanban') as cli:
+            aos.dismiss('owner', 'people', 'task')
+        cli.assert_not_called()
+
+        con = sqlite3.connect(aos.BOARDS / 'people' / 'kanban.db')
+        status = con.execute(
+            "SELECT status FROM tasks WHERE id='task'").fetchone()[0]
+        con.close()
+        self.assertEqual(status, 'archived')
+
+    def test_dismissed_work_leaves_the_list_but_keeps_its_record(self):
+        self.add_file()
+        con = sqlite3.connect(aos.BOARDS / 'people' / 'kanban.db')
+        con.execute("UPDATE tasks SET status='done', completed_at=1 WHERE id='task'")
+        con.commit()
+        con.close()
+        aos.dismiss('owner', 'people', 'task')
+        # Gone from the owner's list...
+        work = aos.my_work('owner')
+        self.assertNotIn('task', [t['id'] for t in work['ready']])
+        # ...but the task and its signature history still resolve.
+        self.assertEqual(aos._get_task('people', 'task')['status'], 'archived')
+
+    def test_finished_work_can_be_dismissed_by_its_owner(self):
+        self.add_file()
+        con = sqlite3.connect(aos.BOARDS / 'people' / 'kanban.db')
+        con.execute("UPDATE tasks SET status='done', completed_at=1 WHERE id='task'")
+        con.commit()
+        con.close()
+        self.assertIn('Example work', self.client.get('/?as=owner').text)
+
+        r = self.client.post('/dismiss/people/task',
+                             data={'user': 'owner', 'back': '/'},
+                             follow_redirects=False)
+        self.assertEqual(r.status_code, 303)
+        self.assertEqual(aos._get_task('people', 'task')['status'], 'archived')
+
+    def test_unfinished_work_cannot_be_dismissed(self):
+        # The fixture task is 'blocked'. Dismissing live work would hide a
+        # problem rather than resolve it.
+        with patch.object(aos, '_kanban') as cli:
+            r = self.client.post('/dismiss/people/task',
+                                 data={'user': 'owner', 'back': '/'},
+                                 follow_redirects=True)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('<dialog open', r.text)
+        self.assertIn('Only finished work can be dismissed', r.text)
+        cli.assert_not_called()
+
+    def test_dismissing_requires_ownership(self):
+        con = sqlite3.connect(aos.BOARDS / 'growth' / 'kanban.db')
+        con.execute("UPDATE tasks SET status='done', completed_at=1 WHERE id='task'")
+        con.commit()
+        con.close()
+        with patch.object(aos, '_kanban') as cli:
+            r = self.client.post('/dismiss/growth/task',
+                                 data={'user': 'reviewer'}, follow_redirects=False)
+        self.assertEqual(r.status_code, 403)
+        cli.assert_not_called()
+
+    def test_unsigned_amber_cannot_be_dismissed_out_of_the_queue(self):
+        self.add_file('growth')
+        con = sqlite3.connect(aos.BOARDS / 'growth' / 'kanban.db')
+        con.execute("UPDATE tasks SET status='done', completed_at=1 WHERE id='task'")
+        con.commit()
+        con.close()
+        with patch.object(aos, '_kanban') as cli:
+            r = self.client.post('/dismiss/growth/task',
+                                 data={'user': 'marketer', 'back': '/'},
+                                 follow_redirects=True)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('<dialog open', r.text)
+        self.assertIn('still waiting on review', r.text)
+        cli.assert_not_called()
+
+    def test_home_caps_the_finished_list_and_says_so(self):
+        con = sqlite3.connect(aos.BOARDS / 'people' / 'kanban.db')
+        for i in range(12):
+            con.execute("""INSERT INTO tasks (id,title,body,status,priority,
+                           assignee,tenant,created_at,completed_at)
+                           VALUES (?,?,'b','done',3,'p','agent-10',1,?)""",
+                        (f'done{i}', f'Finished item {i}', i))
+        con.commit()
+        con.close()
+        page = self.client.get('/?as=owner').text
+        self.assertIn('Finished item 11', page)   # newest shown
+        self.assertNotIn('Finished item 0', page)  # oldest cut
+        self.assertIn('8 most recent of 12', page)
+
+    def test_cached_connection_still_sees_external_writes(self):
+        # Boards are written by the Hermes dispatcher, a separate process.
+        # A pooled read connection that served a stale snapshot would show
+        # an owner outdated status — worse than being slow.
+        first = aos._get_task('people', 'task')
+        self.assertEqual(first['status'], 'blocked')
+        con = sqlite3.connect(aos.BOARDS / 'people' / 'kanban.db')
+        con.execute("UPDATE tasks SET status='done' WHERE id='task'")
+        con.commit()
+        con.close()
+        self.assertEqual(aos._get_task('people', 'task')['status'], 'done')
+
     def test_task_page_states_progress_not_just_who_ran_it(self):
         # Blocked: the fixture's default. Must read as stopped, not silent.
         page = self.client.get('/task/people/task?as=owner')
@@ -81,7 +399,7 @@ class WebPathsTests(unittest.TestCase):
         self.assertNotIn('Completed by', page.text)
 
         con = sqlite3.connect(aos.BOARDS / 'people' / 'kanban.db')
-        con.execute("UPDATE tasks SET status='in_progress' WHERE id='task'")
+        con.execute("UPDATE tasks SET status='running' WHERE id='task'")
         con.commit()
         con.close()
         page = self.client.get('/task/people/task?as=owner')
@@ -92,8 +410,19 @@ class WebPathsTests(unittest.TestCase):
         con.commit()
         con.close()
         page = self.client.get('/task/people/task?as=owner')
-        self.assertIn('Finished', page.text)
-        self.assertIn('Completed by', page.text)
+        self.assertIn('Missing deliverable', page.text)
+        self.assertNotIn('Completed by', page.text)
+
+    def test_approved_amber_task_shows_approved_as_its_primary_status(self):
+        path = self.add_file('growth')
+        self.set_done()
+        aos.sign('growth', 'task', 'reviewer', 'countersigner', 'approved',
+                 str(path), expected_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+
+        page = self.client.get('/task/growth/task?as=marketer')
+        status = page.text.split('<dt>Status</dt>', 1)[1].split('</dd>', 1)[0]
+        self.assertIn('Approved', status)
+        self.assertNotIn('Finished', status)
 
     def test_signing_journey_from_preview_through_release(self):
         path = self.add_file('growth')
@@ -157,7 +486,10 @@ class WebPathsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn('Reviewable output', response.text)
         self.assertIn('name="expected_hash"', response.text)
-        self.assertEqual(self.client.get('/file/growth/task/1?as=marketer').status_code, 403)
+        owner = self.client.get('/file/growth/task/1?as=marketer')
+        self.assertEqual(owner.status_code, 200)
+        self.assertIn('<dialog open', owner.text)
+        self.assertIn('Not released yet', owner.text)
         self.assertEqual(self.client.get('/file/growth/task/1/raw?as=reviewer').status_code, 403)
         self.assertEqual(self.client.get('/file/growth/task/1/review-raw?as=reviewer').status_code, 200)
         self.assertEqual(self.client.get('/file/growth/task/1/review-raw?as=marketer').status_code, 403)

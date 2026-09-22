@@ -48,7 +48,7 @@
   <div class="card {{ 'warn' if t.status == 'blocked' }}">
     <div class="row">
       <div>
-        <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}&back=/agent/{{ agent.agent_no }}">{{ t.title }}</a>
+        <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
         <div class="muted">
           {{ t.status }}
           {%- if t.deliverables %} · {{ t.deliverables }} file{{ "s" if t.deliverables != 1 }}{% endif %}

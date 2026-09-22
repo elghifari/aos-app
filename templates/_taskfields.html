@@ -1,4 +1,4 @@
-{% set values = values | default({}) %}
+{% set values = values or {} %}
 <h2>What to do</h2>
 <input type="text" name="title" required maxlength="120"
        value="{{ values.get('title', '') }}"

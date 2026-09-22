@@ -39,6 +39,30 @@
       <span class="muted">{{ focus.board }}</span>
     </div>
     <div class="guard">{{ focus.guardrail }}</div>
+    {% if gate and gate.gated %}
+      {% if gate.open %}
+      <div class="gate" style="margin:.6rem 0 0">
+        <div class="gate-label">HUMAN GATE — PASSED</div>
+        <div>Drafting from the approved claim set:</div>
+        {% for s in gate.sources %}
+        <div class="muted" style="margin-top:.3rem">
+          <strong>{{ s.filename }}</strong> — approved by {{ s.signer }}
+          · <code>{{ s.artifact_hash[:16] }}…</code>
+        </div>
+        {% endfor %}
+        <div class="gate-why">
+          The approved file is attached to this task automatically. This agent
+          has no web access, so it cannot draw on anything else.
+        </div>
+      </div>
+      {% else %}
+      <div class="err" style="margin-top:.6rem">
+        <strong>Blocked by the human gate.</strong>
+        Agent {{ gate.upstream }} must produce an output and a qualified
+        signer must approve it before this stage can start.
+      </div>
+      {% endif %}
+    {% endif %}
     {% if focus.blocked %}
       <div class="err">Amber with no assigned signer. Work would complete and
         never be releasable. Assign a signer first.</div>
@@ -58,7 +82,7 @@
   {% include "_taskfields.html" %}
 
   <div style="margin-top:1.2rem">
-    <button class="primary" {{ "disabled" if focus.blocked }}>Create</button>
+    <button class="primary" {{ "disabled" if focus.blocked or (gate and gate.gated and not gate.open) }}>Create</button>
     <a href="/agent/{{ focus.agent_no }}?as={{ user }}"><button type="button">Cancel</button></a>
     <a href="/new?as={{ user }}" class="muted" style="margin-left:.6rem; font-size:.85rem">
       choose a different agent</a>

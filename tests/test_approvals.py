@@ -6,6 +6,7 @@ registry, or approvals data is read or written.
 """
 import hashlib
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,8 +22,14 @@ def digest(path: Path) -> str:
 
 class ApprovalStateTests(unittest.TestCase):
     def setUp(self):
+        self.addCleanup(lambda: aos.GATED_STAGES.pop('91b', None))
+        self.addCleanup(lambda: aos.GATED_STAGES.pop('91c', None))
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # Board connections are pooled; a handle to a previous test's
+        # temp dir must not survive into this one.
+        aos._close_pool()
+        self.addCleanup(aos._close_pool)
         self.root = Path(self.tmp.name)
         for target, name, value in [
             (R, 'REGISTRY_DB', self.root / 'registry.db'),
@@ -75,6 +82,138 @@ class ApprovalStateTests(unittest.TestCase):
         path = self.artifact(number, board)
         return aos.sign(board, task, 'signer', 'countersigner', decision,
                         str(path), expected_hash=digest(path))
+
+    def stage_task(self, task_id, agent, status='done', board='one'):
+        con = sqlite3.connect(aos.BOARDS / board / 'kanban.db')
+        con.execute("INSERT INTO tasks VALUES (?,?,?,?,3,NULL,?,NULL,1)",
+                    (task_id, task_id, 'brief', status, R.tenant_for(agent)))
+        con.commit()
+        con.close()
+
+    def test_standing_rules_are_prepended_so_briefs_can_be_short(self):
+        # A two-line brief from a busy staff member must still produce a
+        # run bound by the agent's rules. Safety lives in the role, not in
+        # the requester's typing.
+        R.register('95', 'Evidence Table', 'one', 'amber', 'agent',
+                   'Evidence table only. KURI ceiling at this stage.',
+                   profile='pod-test',
+                   owners=[('owner', 'owner'), ('reviewer', aos.AMBER_SIGNER_ROLE)])
+        aos.STANDING_RULES['95'] = ['Only cite a source you opened.',
+                                    'List failed lookups under COULD NOT VERIFY.']
+        self.addCleanup(lambda: aos.STANDING_RULES.pop('95', None))
+
+        calls = []
+        with patch.object(aos, '_kanban',
+                          side_effect=lambda b, *a: calls.append(a) or '{"id":"t1"}'):
+            aos.create_task('owner', 'one', '95', 'Cari bukti TMS',
+                            'Cari bukti ilmiah TMS depresi remaja. 8-12 sumber, DOI wajib.')
+
+        body = next(x for c in calls for x in c if 'Cari bukti ilmiah' in str(x))
+        self.assertIn('Only cite a source you opened.', body)
+        self.assertIn('COULD NOT VERIFY', body)
+        self.assertIn('Evidence table only', body)      # registry guardrail
+        self.assertIn('Cari bukti ilmiah', body)        # the brief itself
+        self.assertLess(body.index('Only cite'), body.index('Cari bukti ilmiah'),
+                        'rules must precede the brief')
+
+    def test_an_agent_without_role_rules_still_gets_delivery_requirement(self):
+        R.register('96', 'Plain agent', 'one', 'green', 'agent', 'Runs.',
+                   profile='p', owners=[('owner', 'owner')])
+        calls = []
+        with patch.object(aos, '_kanban',
+                          side_effect=lambda b, *a: calls.append(a) or '{"id":"t1"}'):
+            aos.create_task('owner', 'one', '96', 'JD batch', 'Write three JDs.')
+        body = next(x for c in calls for x in c if 'Write three JDs' in str(x))
+        self.assertNotIn('COULD NOT VERIFY', body)
+        self.assertIn('include every output file in kanban_complete artifacts', body)
+        self.assertTrue(body.endswith('Write three JDs.'))
+
+    def test_agentic_work_requires_a_preserved_deliverable(self):
+        R.register('97', 'Evidence worker', 'one', 'green', 'agent', 'Runs.',
+                   profile='p', owners=[('owner', 'owner')])
+        calls = []
+        with patch.object(aos, '_kanban',
+                          side_effect=lambda b, *a: calls.append(a) or '{"id":"t1"}'):
+            aos.create_task('owner', 'one', '97', 'Evidence table', 'Write the table.')
+
+        create = next(c for c in calls if c[0] == 'create')
+        body = create[create.index('--body') + 1]
+        self.assertEqual(create[create.index('--completion-contract') + 1], 'artifact-required')
+        self.assertIn('include every output file in kanban_complete artifacts', body)
+
+    def test_creating_work_for_an_agent_dispatches_it_immediately(self):
+        R.register('94', 'Worker agent', 'one', 'green', 'agent', 'Runs.',
+                   profile='p', owners=[('owner', 'owner')])
+        with patch.object(aos, '_kanban', return_value='{"id":"new"}') as cli:
+            aos.create_task('owner', 'one', '94', 'Draft a JD', 'brief')
+        calls = [c.args[1] for c in cli.call_args_list]
+        self.assertIn('dispatch', calls)
+        # Dispatch must come after create and assign, or there is nothing
+        # for the dispatcher to claim.
+        self.assertGreater(calls.index('dispatch'), calls.index('assign'))
+
+    def test_seat_work_is_not_dispatched(self):
+        R.register('95', 'FTE model', 'one', 'green', 'seat', 'Human work.',
+                   owners=[('owner', 'owner')])
+        with patch.object(aos, '_kanban', return_value='{"id":"new"}') as cli:
+            aos.create_task('owner', 'one', '95', 'Model FTE', 'brief')
+        calls = [c.args[1] for c in cli.call_args_list]
+        self.assertNotIn('dispatch', calls)
+        self.assertNotIn('assign', calls)
+
+    def test_dispatch_failure_does_not_lose_the_task(self):
+        R.register('96', 'Worker agent', 'one', 'green', 'agent', 'Runs.',
+                   profile='p', owners=[('owner', 'owner')])
+        def flaky(board, *args):
+            if args[0] == 'dispatch':
+                raise subprocess.CalledProcessError(1, 'hermes')
+            return '{"id":"new"}'
+        with patch.object(aos, '_kanban', side_effect=flaky):
+            # The task exists; only the immediate start failed. The gateway
+            # tick will pick it up, so this must not raise.
+            self.assertEqual(
+                aos.create_task('owner', 'one', '96', 'Draft', 'brief'), 'new')
+
+    def test_gated_stage_refuses_until_the_prior_stage_is_approved(self):
+        # 03b-equivalent: a stage behind a human gate.
+        R.register('91b', 'Drafter', 'one', 'amber', 'agent', 'From the claim set only.',
+                   profile='p', owners=[('owner', 'owner'), ('signer', 'countersigner')])
+        aos.GATED_STAGES['91b'] = '91'
+
+        # Nothing approved upstream -> refuse, naming what is missing.
+        with self.assertRaisesRegex(aos.GateNotPassed, 'approved'):
+            aos.create_task('owner', 'one', '91b', 'Draft the article', 'brief')
+
+        # An upstream task that is merely DONE is not enough.
+        with self.assertRaises(aos.GateNotPassed):
+            aos.create_task('owner', 'one', '91b', 'Draft the article', 'brief')
+
+        # Approve the upstream artifact, and the stage opens.
+        self.approve(1)
+        with patch.object(aos, '_kanban', return_value='{"id": "child"}') as cli:
+            task_id = aos.create_task('owner', 'one', '91b', 'Draft', 'brief')
+        self.assertEqual(task_id, 'child')
+        # The approved file is carried forward, not retyped.
+        call = next(c.args for c in cli.call_args_list if c.args[1] == 'create')
+        body = call[call.index('--body') + 1]
+        self.assertIn('APPROVED CLAIM SET', body)
+        self.assertIn('1.txt', body)
+        self.assertIn('brief', body)
+        # And provenance is recorded as a link, not prose.
+        self.assertTrue(any(c.args[1] == 'link' for c in cli.call_args_list))
+
+    def test_ungated_agents_are_unaffected(self):
+        with patch.object(aos, '_kanban', return_value='{"id": "x"}'):
+            self.assertEqual(
+                aos.create_task('owner', 'one', '91', 'Evidence table', 'brief'), 'x')
+
+    def test_rejected_upstream_does_not_open_the_gate(self):
+        R.register('91c', 'Drafter', 'one', 'amber', 'agent', 'From the claim set only.',
+                   profile='p', owners=[('owner', 'owner'), ('signer', 'countersigner')])
+        aos.GATED_STAGES['91c'] = '91'
+        self.approve(1, 'rejected')
+        with self.assertRaises(aos.GateNotPassed):
+            aos.create_task('owner', 'one', '91c', 'Draft', 'brief')
 
     def test_rejected_work_reads_as_rejected_and_stays_in_the_queue(self):
         self.approve(1, 'rejected')
