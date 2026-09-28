@@ -332,7 +332,8 @@ POST redirects cannot become open redirects.
 1. board authorization;
 2. agent existence, board, active-state, and owner checks;
 3. refusal of Amber work with no named countersigner;
-4. Agent 03 upstream-gate check where applicable;
+4. Agent 03 upstream-gate check where applicable, including selected source
+   task and current approval state for 03b;
 5. standing-rule injection where configured;
 6. Hermes task creation with the agent tenant;
 7. provenance links for gated downstream work;
@@ -490,10 +491,16 @@ human signature remain the controls.
 ### 7.2 Human gate
 
 `GATED_STAGES` maps `03b` to `03a`. `gate_state()` finds current approved 03a
-artifacts. If none exist, `create_task()` raises `GateNotPassed`, including when
-the caller bypasses the UI.
+artifacts. On an approved 03a task, the owner sees **Send to 03b** in Review
+state. It opens `/new` with that task selected; the owner supplies a title and
+nonblank drafting brief before submitting. No task is created by opening the
+form. A direct 03b request must also select an approved 03a task; the server
+rejects missing, stale, or mismatched sources, including when the caller
+bypasses the UI. The action is shown only to a 03b owner when the whole 03a
+task is approved and finished.
 
-When the gate is open, `_claim_set_body()` prepends:
+When the gate is open, `_claim_set_body()` prepends only the selected task's
+currently approved files, not every approved 03a artifact on the board:
 
 - the exact approved artifact text;
 - upstream task and filename;
@@ -501,7 +508,10 @@ When the gate is open, `_claim_set_body()` prepends:
 - SHA-256 provenance;
 - instructions not to add or strengthen claims.
 
-Task links record upstream/downstream provenance as data.
+The file bytes are hashed again immediately before injection; changed bytes
+raise `GateNotPassed`. Creation then records a task link to the selected
+upstream task and dispatches 03b. This is the same human gate whether the
+owner starts at the 03a task page or at the general 03b creation form.
 
 ### 7.3 03b — constrained drafting profile
 

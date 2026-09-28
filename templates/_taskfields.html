@@ -9,7 +9,7 @@
   whether the output answers the ask — say what the constraint is, not just
   the topic.
 </p>
-<textarea name="body" rows="7"
+<textarea name="body" rows="7" {{ 'required' if focus and focus.agent_no == '03b' }}
           placeholder="Scope, sources, what must not be claimed, where the output goes">{{ values.get('body', '') }}</textarea>
 
 <h2>Priority</h2>

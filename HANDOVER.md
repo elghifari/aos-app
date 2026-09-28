@@ -1,6 +1,6 @@
 # AOS — Session Handover
 
-Last verified: **2026-09-22 09:25 SEAST**
+Last verified: **2026-09-28 SEAST**
 
 This is the compact entry point for the next engineering session. It records
 current implementation state, verification, known gaps, and where to continue.
@@ -26,41 +26,20 @@ against live code or tests when they matter.
 
 - Repository: `C:/Users/M. Daffa El Ghifari/aos-app`
 - Branch: `main`
-- HEAD: `2cb81a3`
-- Remote: `origin/main` is 0 ahead / 0 behind HEAD
-- Working tree: intentionally uncommitted iterative work exists
 - User commits and pushes their own work unless they explicitly ask otherwise
-
-Current modified implementation areas:
-
-- `aos.py`
-- `web.py`
-- `templates/_taskfields.html`
-- `templates/new.html`
-- `templates/queue.html`
-- `templates/task.html`
-- `tests/test_approvals.py`
-- `tests/test_web.py`
-- `README.md`
-- `ARCHITECTURE.md`
-- `HANDOVER.md`
-
-Current additions:
-
-- `demo.sh`
-- `rehearse.sh`
-
-Current repository housekeeping still to decide:
-
-- `.hermes-tmp.wyrlK8/` is untracked and appears temporary.
-- `.rehearsal-watermark` is untracked rehearsal state.
-- Do not delete either without checking whether the current demo reset flow
-  still needs it.
+- The UI redesign, 03a→03b handoff, and `run.sh` health-check fix were
+  committed together. Check `git status` and `git log -1` for live state.
+- The deleted `AOS_agent_decisions.xlsx`, demo/rehearsal scripts and watermark,
+  temporary `.hermes-tmp.*`, and design review artifacts were deliberately not
+  included in that commit. Their ownership and retention need separate review.
+- The post-build UI audit (`anti-slop/audit-001-2026-09-22.md`) records residual
+  mobile wrapping, touch-target, dialog, and copy issues; they were not fixed
+  by the 03b handoff work.
 
 ## Verified runtime state
 
 - Development server: `http://127.0.0.1:8077`
-- Last health check: HTTP 200, about 30 ms for the u_hr home page
+- Last health check: HTTP 200 for the task page and 03b form
 - Application routes: 13, excluding FastAPI documentation routes
 - Test command:
 
@@ -68,7 +47,7 @@ Current repository housekeeping still to decide:
   python -m unittest discover -s tests
   ```
 
-- Last result: **46 tests passed in 5.752 seconds**
+- Last result: **60 tests passed**; `bash tests/test_run_script.sh` also passed
 - Tests use temporary board, registry, approval, filesystem, and profile-log
   fixtures. They do not call an LLM and do not use the live approvals DB.
 
@@ -136,9 +115,13 @@ Agent 03 is implemented as two stages with a code-enforced human gate:
 - A qualified human approves the current 03a artifact.
 - **03b** can then start and receives only the approved claim set.
 
-A direct request cannot bypass the gate. `create_task()` returns a gate error if
-no current 03a artifact has been approved. Provenance is recorded in task links
-and in the injected task body with signer and SHA-256 details.
+An approved 03a task shows **Send to 03b** in its Review state box to the 03b
+owner. That opens a form with the source fixed to this task; it does not dispatch
+until the owner enters a title and drafting brief and submits. General 03b
+creation also requires selecting an approved 03a task. `create_task()` rejects
+missing or stale approval even for direct calls; it carries only the selected
+task's current approved files, checks their bytes against the signed hashes,
+and records provenance in task links and the injected task body.
 
 The `p1-drafting` profile has no web access, so 03b cannot research around the
 approved claim set.
@@ -176,7 +159,7 @@ still marked degraded. The warning therefore means **some source access failed**
 not necessarily that every paper was unreachable. Preserve the hold, but improve
 telemetry before making stronger claims in the UI.
 
-## Current real trial tasks
+## Historical trial tasks (recheck status before use)
 
 ### 03a TMS trial
 
@@ -269,7 +252,7 @@ See `ARCHITECTURE.md` §14 for the full consistency list.
 ## Where the next session should start
 
 1. Load the `aos` skill and this file.
-2. Run `git status --short`; do not discard the current uncommitted iteration.
+2. Run `git status --short`; preserve unrelated local files and changes.
 3. Run `python -m unittest discover -s tests` before editing.
 4. Confirm whether task `t_f912128e` was approved before changing the warning or
    Agent 03 flow.

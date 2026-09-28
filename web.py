@@ -6,11 +6,7 @@ Android over mobile data, read a queue, open a deliverable, and sign.
 The most complex interaction is a form POST; client-side state would be
 cost without benefit.
 
-AUTHENTICATION IS STUBBED AND DEV-ONLY. The signing-identity decision is
-still open (Telegram OTP vs email magic link vs Workspace accounts for
-pod owners), and building OTP now means building it twice. The stub
-REFUSES to start outside AOS_ENV=development — a stubbed identity must
-never be one environment variable away from production.
+AUTHENTICATION IS STUBBED AND DEV-ONLY
 """
 import os
 import re
@@ -186,10 +182,13 @@ def queue_health(request: Request, as_: str | None = Query(None, alias="as")):
 
 @app.get("/new", response_class=HTMLResponse)
 def new_task_form(request: Request, agent: str | None = Query(None),
+                  source_task: str | None = Query(None),
                   as_: str | None = Query(None, alias="as")):
     user = current_user(request, as_)
     return _new_task_form(request, user, agent,
-                          request.query_params.get("error"), None, status=200)
+                          request.query_params.get("error"),
+                          {"source_task": source_task} if source_task else None,
+                          status=200)
 
 
 def _new_task_form(request: Request, user: str, agent: str | None,
@@ -208,12 +207,21 @@ def _new_task_form(request: Request, user: str, agent: str | None,
             gate = aos.gate_state(user, focus["board"], agent)
         except PermissionError:
             gate = None
+    sources = []
+    if agent == "03b" and gate:
+        seen = set()
+        for source in gate["sources"]:
+            task_id = source["task_id"]
+            if task_id not in seen and aos.signature_state(focus["board"], task_id)["state"] == "approved":
+                sources.append(source)
+                seen.add(task_id)
     return templates.TemplateResponse(request, "new.html", {
         "user": user,
         "agents": creatable,
         "selected": agent,
         "focus": focus,
         "gate": gate,
+        "sources": sources,
         "family": R.family_of(agent) if agent else None,
         "error": error,
         "values": values,
@@ -223,22 +231,25 @@ def _new_task_form(request: Request, user: str, agent: str | None,
 @app.post("/new")
 def create_task_post(request: Request, agent_no: str = Form(...),
                      title: str = Form(...), body: str = Form(""),
-                     priority: int = Form(3), user: str = Form(...)):
+                     priority: int = Form(3), user: str = Form(...),
+                     source_task: str | None = Form(None)):
     user = current_user(request, user)
     agent = R.get_agent(agent_no)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"unknown agent: {agent_no}")
     try:
         task_id = aos.create_task(user, agent["board"], agent_no,
-                                  title, body, priority)
+                                  title, body, priority, source_task=source_task)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except aos.GateNotPassed as e:
         return _new_task_form(request, user, agent_no, str(e),
-                              {"title": title, "body": body, "priority": priority})
+                              {"title": title, "body": body, "priority": priority,
+                               "source_task": source_task})
     except ValueError as e:
         return _new_task_form(request, user, agent_no, str(e),
-                              {"title": title, "body": body, "priority": priority})
+                              {"title": title, "body": body, "priority": priority,
+                               "source_task": source_task})
     return RedirectResponse(
         f"/task/{agent['board']}/{task_id}?as={user}", status_code=303)
 
@@ -274,6 +285,9 @@ def task_detail(request: Request, board: str, task_id: str,
         "state": aos.signature_state(board, task_id),
         "prog": aos.progress(task),
         "can_sign": aos.can_review(user, board, task_id),
+        "can_handoff": agent_no == "03a" and user in R.owners_of("03b", "owner")
+            and task["status"] in ("done", "review")
+            and aos.signature_state(board, task_id)["state"] == "approved",
         "notice": notice,
     })
 

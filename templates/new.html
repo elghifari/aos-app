@@ -40,7 +40,27 @@
     </div>
     <div class="guard">{{ focus.guardrail }}</div>
     {% if gate and gate.gated %}
-      {% if gate.open %}
+      {% if focus.agent_no == '03b' and sources %}
+      {% set chosen = values.get('source_task') if values else none %}
+      <div class="gate" style="margin:.6rem 0 0">
+        <div class="gate-label">HUMAN GATE — PASSED</div>
+        {% if chosen and sources|selectattr('task_id', 'equalto', chosen)|list %}
+          {% set selected_source = sources|selectattr('task_id', 'equalto', chosen)|first %}
+          <div class="small-copy">Approved 03a evidence</div>
+          <div id="source-task"><strong>{{ selected_source.task_title }}</strong> · {{ selected_source.filename }}</div>
+          <input type="hidden" name="source_task" value="{{ chosen }}">
+        {% else %}
+        <label for="source-task">Approved 03a evidence</label>
+        <select id="source-task" name="source_task" required>
+          <option value="">Select a signed evidence task</option>
+          {% for s in sources %}
+          <option value="{{ s.task_id }}">{{ s.task_title }}</option>
+          {% endfor %}
+        </select>
+        {% endif %}
+        <div class="gate-why">Only the selected task's approved files are carried into this draft. The signature is checked again when you create it.</div>
+      </div>
+      {% elif gate.open and focus.agent_no != '03b' %}
       <div class="gate" style="margin:.6rem 0 0">
         <div class="gate-label">HUMAN GATE — PASSED</div>
         <div>Drafting from the approved claim set:</div>

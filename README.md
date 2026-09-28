@@ -71,15 +71,15 @@ Ownership is many-to-many — the Clinical Director countersigns 11 agents acros
 4 pods. `boards_for()` is *derived* from agent ownership, so there is no
 separate access map to drift out of sync with the roster.
 
-**13 of 25 roles have no Hermes worker.** 6 are deterministic n8n pipelines,
-7 are human seat work. They still need tasks, deliverables, and signatures.
+**12 of 25 roles have no Hermes worker.** 6 are deterministic n8n pipelines,
+6 are human seat work. They still need tasks, deliverables, and signatures.
 
 | Delivery box | Count | Worker? |
 | :--- | ---: | :--- |
 | `n8n+agent` | 5 | yes |
-| `agent` | 7 | yes |
+| `agent` | 8 | yes |
 | `n8n` | 6 | no — deterministic pipeline |
-| `seat` | 7 | no — human |
+| `seat` | 6 | no — human |
 
 25 rather than 20 because composites split: 03a/03b, 07a/07b/07c, 11a/11b/11c.
 
@@ -90,8 +90,10 @@ Consequences enforced in code:
   deterministic gate cannot accidentally be given a model.
 - `complete_by_human()` refuses to close a task belonging to an agentic role.
 - Agent 03 is split in code: 03b cannot start until a qualified signer approves
-  a current 03a artifact. The approved claim set and its SHA-256 provenance are
-  injected into 03b; the drafter profile has no web access.
+  a current 03a artifact. On an approved 03a task, the owner can use **Send to
+  03b** in Review state, then enter a title and drafting brief. Only that task's
+  approved files and SHA-256 provenance are injected into 03b. Submission
+  rechecks approval and file bytes; the drafter profile has no web access.
 - 03a standing evidence rules are prepended to every task, so employees can use
   short briefs without having to repeat citation and KURI controls.
 - Evidence-tool failures are correlated against the run window. A degraded run
@@ -102,6 +104,10 @@ Seeded owners are **placeholders** (`u_hr`, `u_clinical_director`). Real
 identities come from HR; nothing in the registry is real until then.
 
 ## First-time initialization
+
+**Do not run `seed_registry.py` against the live registry yet.** Its 03b row
+still says `seat` rather than the approved agentic `p1-drafting` configuration;
+fix that mismatch before reseeding. For a fresh, empty local registry only:
 
 ```bash
 python -c "import aos; aos.init_approvals()"
@@ -137,6 +143,8 @@ profile logs. It neither reads nor writes live approvals and never calls an LLM.
 | `HANDOVER.md` | next engineering session — verified state, current work, known gaps |
 | `ARCHITECTURE.md` | current implementation, boundaries, data flow, known defects |
 | `DECISIONS.md` | record of guardrail/zone/signer changes |
+| `PRODUCT.md`, `DESIGN.md` | product constraints and visual tokens for the server-rendered UI |
+| `anti-slop/audit-001-2026-09-22.md` | post-build UI/accessibility findings |
 
 ## Status
 

@@ -7,8 +7,8 @@ PORT=8077
 PIDFILE=.aos.pid
 LOG=aos.log
 
-if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
-  echo "already running (pid $(cat $PIDFILE)) -> http://127.0.0.1:$PORT/"
+if [ "$(curl --max-time 2 -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/?as=u_marketing" 2>/dev/null)" = "200" ]; then
+  echo "already running -> http://127.0.0.1:$PORT/?as=u_marketing"
   exit 0
 fi
 
@@ -17,10 +17,13 @@ AOS_ENV=development nohup python -m uvicorn web:app \
 echo $! > "$PIDFILE"
 disown 2>/dev/null
 
-sleep 4
-if [ "$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/?as=u_marketing")" = "200" ]; then
-  echo "up (pid $(cat $PIDFILE)) -> http://127.0.0.1:$PORT/?as=u_marketing"
-else
-  echo "failed to start — see $LOG"
-  tail -5 "$LOG"
-fi
+for attempt in {1..30}; do
+  if [ "$(curl --max-time 2 -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/?as=u_marketing" 2>/dev/null)" = "200" ]; then
+    echo "up -> http://127.0.0.1:$PORT/?as=u_marketing"
+    exit 0
+  fi
+  sleep 1
+done
+
+echo "failed to start — see $LOG" >&2
+exit 1

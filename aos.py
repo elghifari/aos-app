@@ -463,10 +463,13 @@ def _claim_set_body(brief: str, gate: dict) -> str:
              "need is not here, say so instead of filling the gap.",
              ""]
     for s in gate["sources"]:
+        evidence = s["path"].read_bytes()
+        if hashlib.sha256(evidence).hexdigest() != s["artifact_hash"]:
+            raise GateNotPassed("The approved evidence changed before drafting. Review it again.")
         lines += [f"### {s['filename']}  (from: {s['task_title']})",
                   f"Approved by {s['signer']} · sha256 {s['artifact_hash'][:16]}…",
                   "",
-                  s["path"].read_text(encoding="utf-8", errors="replace"),
+                  evidence.decode("utf-8", errors="replace"),
                   ""]
     lines += ["## THE BRIEF", "", brief]
     return "\n".join(lines)
@@ -547,7 +550,7 @@ def brief_for_display(task: dict) -> str:
 
 
 def create_task(user: str, board: str, agent_no: str, title: str, body: str,
-                priority: int = 3) -> str:
+                priority: int = 3, source_task: str | None = None) -> str:
     """Create work for an agent.
 
     Dispatchability is decided by the registry, not the caller. An agentic
@@ -585,6 +588,20 @@ def create_task(user: str, board: str, agent_no: str, title: str, body: str,
             f"agent {agent_no} may not start until an output of agent "
             f"{gate['upstream']} has been approved by its signer. "
             f"Nothing approved yet.")
+    if agent_no == "03b":
+        if not body.strip():
+            raise ValueError("Add a drafting brief before starting 03b.")
+        if not source_task:
+            raise GateNotPassed("Select an approved 03a task before drafting.")
+        upstream_task = _get_task(board, source_task)
+        if (R.agent_of_task(upstream_task) != "03a"
+                or upstream_task["status"] not in ("done", "review")
+                or signature_state(board, source_task)["state"] != "approved"):
+            raise GateNotPassed("The selected 03a task is not currently approved.")
+        sources = [s for s in gate["sources"] if s["task_id"] == source_task]
+        if not sources:
+            raise GateNotPassed("The selected 03a evidence is no longer approved.")
+        gate = {**gate, "sources": sources}
     if gate["gated"]:
         body = _claim_set_body(body, gate)
 

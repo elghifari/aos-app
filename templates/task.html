@@ -2,9 +2,15 @@
 {% block title %}{{ task.title }}{% endblock %}
 {% block body %}
 
-<header>
-  <h1><a href="{{ back }}" style="text-decoration:none">&larr;</a> Review</h1>
-  <span class="muted">{{ user }}</span>
+<header class="site-header">
+  <div class="back-title">
+    <a class="back-link" href="{{ back }}" aria-label="Back">←</a>
+    <div>
+      <div class="small-copy">Task manifest</div>
+      <h1>{{ task.title }}</h1>
+    </div>
+  </div>
+  <span class="identity">{{ user }}</span>
 </header>
 
 {% if notice %}
@@ -15,153 +21,168 @@
 </dialog>
 {% endif %}
 
-<div class="card">
-  <strong>{{ task.title }}</strong>
-  {% if agent %}<span class="tag {{ agent.zone }}">{{ agent.zone }}</span>{% endif %}
-  <dl style="margin-top:.7rem">
-    <dt>Status</dt>
-    <dd>
-      {% if state.state == "approved" and task.status in ("done", "review") %}
-      <strong>Approved</strong>
-      <div class="muted">Every current deliverable was approved and can be used.</div>
-      {% elif task.status in ("done", "review") and not files %}
-      <strong>Missing deliverable</strong>
-      <div class="muted">The worker completed without attaching output. This task cannot be reviewed or released.</div>
-      {% else %}
-      <strong>{{ prog.label }}</strong>
-      <div class="muted">{{ prog.detail }}</div>
-      {% endif %}
-    </dd>
-    <dt>Agent</dt><dd>{{ agent.agent_no }} · {{ agent.name }}</dd>
-    <dt>Pod</dt><dd>{{ board }}</dd>
-    {% if prog.finished and files %}
-    <dt>Completed by</dt>
-    <dd>{% if agent.is_agentic %}worker ({{ task.assignee }}){% else %}human · {{ agent.delivery_box }}{% endif %}</dd>
-    {% elif prog.finished %}
-    <dt>Delivery</dt>
-    <dd>Worker run ended without a durable output.</dd>
-    {% else %}
-    <dt>Assigned to</dt>
-    <dd>{% if agent.is_agentic %}{{ task.assignee or "no worker yet" }}{% else %}a person · {{ agent.delivery_box }}{% endif %}</dd>
-    {% endif %}
-    {% if task.result %}<dt>Result</dt><dd>{{ task.result }}</dd>{% endif %}
-  </dl>
-  {% if agent %}<div class="guard"><strong>Guardrail.</strong> {{ agent.guardrail }}</div>{% endif %}
-</div>
-
-{% if brief %}
-<h2>The brief</h2>
-<div class="card">
-  <div style="white-space:pre-wrap">{{ brief }}</div>
-  <p class="muted" style="margin:.6rem 0 0">
-    What was asked for. Judge the output against this, not against the topic.
-  </p>
-</div>
-{% endif %}
-
-<h2>Deliverables</h2>
-{% if files %}
-  {% for f in files %}
-  <div class="card">
-    <div class="row">
-      <div>
-        <a class="title" href="/file/{{ board }}/{{ task.id }}/{{ f.id }}?as={{ user }}">{{ f.filename }}</a>
-        <div class="muted">{{ (f.size_bytes / 1024) | round(1) }} KB · {{ f.uploaded_by or "—" }}</div>
+<div class="task-shell">
+  <div>
+    <section class="task-lead" aria-labelledby="task-status">
+      <div class="task-title-row">
+        <div>
+          <h2 id="task-status" style="margin:0 0 .35rem">Current checkpoint</h2>
+          {% if state.state == "approved" and task.status in ("done", "review") %}
+          <strong style="font-size:1.2rem">Approved</strong>
+          <div class="muted">Every current deliverable was approved and can be used.</div>
+          {% elif task.status in ("done", "review") and not files %}
+          <strong style="font-size:1.2rem">Missing deliverable</strong>
+          <div class="muted">The worker completed without attaching output. This task cannot be reviewed or released.</div>
+          {% else %}
+          <strong style="font-size:1.2rem">{{ prog.label }}</strong>
+          <div class="muted">{{ prog.detail }}</div>
+          {% endif %}
+        </div>
+        {% if agent %}<span class="tag {{ agent.zone }}">{{ agent.zone }}</span>{% endif %}
       </div>
-      <a href="/file/{{ board }}/{{ task.id }}/{{ f.id }}?as={{ user }}">
-        <button class="small">{{ "Review" if can_sign else "Open" }}</button></a>
-    </div>
-  </div>
-  {% endfor %}
-  {% if can_sign %}
-  <p class="muted">
-    Each file is signed on its own page, against the bytes you were shown.
-    A task is released only when every file has been approved.
-  </p>
-  {% endif %}
-{% else %}
-  <div class="empty">No files attached.</div>
-{% endif %}
 
-<h2>Runs <span class="muted">({{ runs|length }})</span></h2>
-{% if runs %}
-  {% for r in runs %}
-  <div class="run {{ 'failed' if r.error }}">
-    <div class="muted">
-      run {{ r.id }} · {{ r.profile or "—" }} · {{ r.outcome or r.status }}
-      {%- if r.duration_s %} · {{ r.duration_s }}s{% endif %}
-    </div>
-    {% if r.summary %}<div style="margin-top:.25rem">{{ r.summary }}</div>{% endif %}
-    {% if r.error %}<div class="err">{{ r.error }}</div>{% endif %}
-  </div>
-  {% endfor %}
-  <p class="muted">What the worker claims it did. Check it against the file.</p>
-{% else %}
-  <div class="empty">No recorded runs.</div>
-{% endif %}
+      <ol class="route" aria-label="Task route" style="margin-top:1.2rem">
+        <li class="done">Commissioned</li>
+        <li class="{{ 'done' if prog.finished else 'current' }}">Working</li>
+        <li class="{{ 'done' if files else ('hold' if prog.finished else '') }}">Output</li>
+        {% if state.state == "approved" %}
+        <li class="done">Reviewed</li><li class="current">Ready</li>
+        {% elif state.state == "rejected" %}
+        <li class="hold">Rejected</li><li>Not released</li>
+        {% elif agent and agent.zone == "amber" and files %}
+        <li class="current">Review</li><li>Ready</li>
+        {% elif agent and agent.zone != "amber" and prog.finished and files and state.state != "degraded" %}
+        <li class="done">Not required</li><li class="current">Ready</li>
+        {% elif state.state == "degraded" %}
+        <li class="hold">Held</li><li>Ready</li>
+        {% else %}
+        <li>Review if needed</li><li>Ready</li>
+        {% endif %}
+      </ol>
 
-<h2>Review state</h2>
-{% if state.integrity and state.integrity.degraded %}
-<div class="card warn">
-  <strong>The agent could not reach its sources during this run.</strong>
-  <div class="muted" style="margin-top:.25rem">{{ state.integrity.reason }}</div>
-  <div class="muted" style="margin-top:.4rem; font-size:.82rem">
-    Check every citation against the source itself before using any of this.
-    The run reported success — that report is what this warning exists to
-    contradict.
+      {% if agent %}<div class="guard"><strong>Guardrail.</strong> {{ agent.guardrail }}</div>{% endif %}
+    </section>
+
+    {% if brief %}
+    <section aria-labelledby="brief-heading">
+      <div class="section-head"><h2 id="brief-heading">The brief</h2><span class="small-copy">The acceptance reference</span></div>
+      <div class="panel">
+        <div style="white-space:pre-wrap">{{ brief }}</div>
+        <p class="small-copy" style="margin:.7rem 0 0">Judge the output against what was asked for, not against the topic alone.</p>
+      </div>
+    </section>
+    {% endif %}
+
+    <section aria-labelledby="deliverables-heading">
+      <div class="section-head"><h2 id="deliverables-heading">Deliverables</h2><span class="small-copy">{{ files|length }} file{{ "s" if files|length != 1 }}</span></div>
+      {% if files %}
+        <div class="panel">
+        {% for f in files %}
+          <div class="manifest">
+            <div>
+              <a class="manifest-title" href="/file/{{ board }}/{{ task.id }}/{{ f.id }}?as={{ user }}">{{ f.filename }}</a>
+              <div class="manifest-meta">{{ (f.size_bytes / 1024) | round(1) }} KB · {{ f.uploaded_by or "—" }}</div>
+            </div>
+            <a class="button small manifest-action" href="/file/{{ board }}/{{ task.id }}/{{ f.id }}?as={{ user }}">{{ "Review" if can_sign else "Open" }}</a>
+          </div>
+        {% endfor %}
+        </div>
+        {% if can_sign %}<p class="small-copy">Each file is signed on its own page against the bytes shown there. Release waits until every file is approved.</p>{% endif %}
+      {% else %}
+        <div class="empty">No files are attached yet. A finished task without a durable output cannot move to review or release.</div>
+      {% endif %}
+    </section>
+
+    <section aria-labelledby="runs-heading">
+      <div class="section-head"><h2 id="runs-heading">Runs</h2><span class="small-copy">{{ runs|length }} recorded</span></div>
+      {% if runs %}
+      <div class="panel">
+        {% for r in runs %}
+        <div class="run {{ 'failed' if r.error }}">
+          <div class="small-copy">run {{ r.id }} · {{ r.profile or "—" }} · {{ r.outcome or r.status }}{% if r.duration_s %} · {{ r.duration_s }}s{% endif %}</div>
+          {% if r.summary %}<div style="margin-top:.25rem">{{ r.summary }}</div>{% endif %}
+          {% if r.error %}<div class="err">{{ r.error }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      <p class="small-copy">This is what the worker reports. Verify it against the attached file.</p>
+      {% else %}
+      <div class="empty">No run has been recorded yet.</div>
+      {% endif %}
+    </section>
   </div>
+
+  <aside class="task-aside" aria-label="Task release state">
+    <section class="panel">
+      <div class="panel-title"><h2>Manifest details</h2><span class="status-stamp">{{ task.status }}</span></div>
+      <dl>
+        <dt>Status</dt>
+        <dd>
+          {% if state.state == "approved" and task.status in ("done", "review") %}
+          <strong>Approved</strong>
+          {% elif task.status in ("done", "review") and not files %}
+          <strong>Missing deliverable</strong>
+          {% else %}
+          <strong>{{ prog.label }}</strong>
+          {% endif %}
+        </dd>
+        <dt>Agent</dt><dd>{{ agent.agent_no }} · {{ agent.name }}</dd>
+        <dt>Pod</dt><dd>{{ board }}</dd>
+        {% if prog.finished and files %}
+        <dt>Completed by</dt><dd>{% if agent.is_agentic %}worker ({{ task.assignee }}){% else %}human · {{ agent.delivery_box }}{% endif %}</dd>
+        {% elif prog.finished %}
+        <dt>Delivery</dt><dd>Worker run ended without a durable output.</dd>
+        {% else %}
+        <dt>Assigned to</dt><dd>{% if agent.is_agentic %}{{ task.assignee or "no worker yet" }}{% else %}a person · {{ agent.delivery_box }}{% endif %}</dd>
+        {% endif %}
+        {% if task.result %}<dt>Result</dt><dd>{{ task.result }}</dd>{% endif %}
+      </dl>
+    </section>
+
+    <section class="panel" aria-labelledby="review-state-heading">
+      <div class="panel-title"><h2 id="review-state-heading">Review state</h2></div>
+      {% if state.integrity and state.integrity.degraded %}
+      <div class="notice-band warn">
+        <strong>The agent could not reach its sources during this run.</strong>
+        <div class="small-copy" style="margin-top:.35rem">{{ state.integrity.reason }}</div>
+        <div class="small-copy" style="margin-top:.45rem">Check every citation against the source itself before using this output. The worker's success report does not clear this hold.</div>
+      </div>
+      {% elif state.integrity and not state.integrity.checked %}
+      <div class="notice-band">Tool health for this run could not be verified. {{ state.integrity.reason }}</div>
+      {% endif %}
+
+      {% if agent and agent.zone != "amber" %}
+        {% if state.state == "degraded" %}
+        <div class="notice-band warn" style="margin-top:.7rem"><strong>Held for review.</strong><div class="small-copy" style="margin-top:.3rem">Green work normally ships without a signature. This run did not reach its sources, so a person must clear it first.</div></div>
+        {% else %}
+        <div class="empty" style="margin-top:.7rem">Green. No signature required before use.</div>
+        {% endif %}
+      {% elif not files %}
+        <div class="empty" style="margin-top:.7rem">Nothing to review yet. A signature is pinned to exact file bytes, so there must be a deliverable.</div>
+      {% else %}
+        <div class="notice-band {{ 'warn' if state.state == 'rejected' else ('amber' if not state.approved) }}" style="margin-top:.7rem">
+          {% if state.state == "approved" %}
+          <strong style="color:var(--green)">Approved — releasable.</strong>
+          {% elif state.state == "rejected" %}
+          <strong>Rejected. Not releasable.</strong>
+          {% else %}
+          <strong>Awaiting sign-off.</strong>
+          {% endif %}
+          {% set duplicate = state.integrity and state.integrity.degraded and state.reason == state.integrity.reason %}
+          {% if not duplicate %}<div class="small-copy" style="margin-top:.3rem">{{ state.reason or "Every attachment has been approved against its current bytes." }}</div>{% endif %}
+          {% if can_sign and not state.approved %}
+          <div class="small-copy" style="margin-top:.45rem">Open a file to read it and record your decision.</div>
+          {% elif not can_sign %}
+          <div class="small-copy" style="margin-top:.45rem">You are not a qualified signer for agent {{ agent.agent_no if agent else "—" }}. Signing authority is set per agent.</div>
+          {% endif %}
+        </div>
+        {% if can_handoff %}
+        <a class="button primary handoff-action" href="/new?agent=03b&amp;source_task={{ task.id }}&amp;as={{ user }}">Send to 03b</a>
+        <p class="small-copy" style="margin:.55rem 0 0">Add the drafting brief before work starts. Only this task's approved evidence will be used.</p>
+        {% endif %}
+      {% endif %}
+    </section>
+  </aside>
 </div>
-{% elif state.integrity and not state.integrity.checked %}
-<div class="card">
-  <span class="muted">Tool health for this run could not be verified.
-    {{ state.integrity.reason }}</span>
-</div>
-{% endif %}
-{% if agent and agent.zone != "amber" %}
-  {% if state.state == "degraded" %}
-  <div class="card warn">
-    <strong>Held for review.</strong>
-    <div class="muted" style="margin-top:.2rem">
-      Green work normally ships without a signature, but that assumes the
-      agent did the work it claims. This run did not reach its sources, so
-      a person must clear it first.
-    </div>
-  </div>
-  {% else %}
-  <div class="empty">Green. No signature required before use.</div>
-  {% endif %}
-{% elif not files %}
-  <div class="empty">
-    Nothing to review yet. A signature is pinned to the exact bytes reviewed,
-    so there must be a file.
-  </div>
-{% else %}
-  <div class="card {{ 'warn' if state.state == 'rejected' else ('amber' if not state.approved) }}">
-    {% if state.state == "approved" %}
-      <strong style="color:var(--green)">Approved — releasable.</strong>
-    {% elif state.state == "rejected" %}
-      <strong>Rejected. Not releasable.</strong>
-    {% else %}
-      <strong>Awaiting sign-off.</strong>
-    {% endif %}
-    {% set duplicate = state.integrity and state.integrity.degraded
-                       and state.reason == state.integrity.reason %}
-    {% if not duplicate %}
-    <div class="muted" style="margin-top:.2rem">
-      {{ state.reason or "Every attachment has been approved against its current bytes." }}
-    </div>
-    {% endif %}
-    {% if can_sign and not state.approved %}
-    <div class="muted" style="margin-top:.4rem; font-size:.82rem">
-      Open a file above to read it and record your decision.
-    </div>
-    {% elif not can_sign %}
-    <div class="muted" style="margin-top:.4rem; font-size:.82rem">
-      You are not a qualified signer for agent {{ agent.agent_no if agent else "—" }}.
-      Signing authority is per-agent and set in the registry.
-    </div>
-    {% endif %}
-  </div>
-{% endif %}
 
 {% endblock %}

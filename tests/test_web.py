@@ -73,6 +73,104 @@ class WebPathsTests(unittest.TestCase):
         con.close()
         return path
 
+    def prepare_handoff(self):
+        R.register('03b', 'Clinical Content Drafter', 'growth', 'amber', 'agent',
+                   'Use approved claims only.', profile='draft-profile',
+                   owners=[('marketer', 'owner'), ('reviewer', 'countersigner')])
+        first = self.add_file('growth')
+        self.set_done()
+        aos.sign('growth', 'task', 'reviewer', 'countersigner', 'approved',
+                 str(first), expected_hash=hashlib.sha256(first.read_bytes()).hexdigest())
+        return first
+
+    def test_approved_03a_task_offers_scoped_handoff_in_review_state(self):
+        self.prepare_handoff()
+        page = self.client.get('/task/growth/task?as=marketer')
+        review = page.text.split('id="review-state-heading"', 1)[1].split('</section>', 1)[0]
+        self.assertIn('href="/new?agent=03b&amp;source_task=task&amp;as=marketer"', review)
+        self.assertIn('Send to 03b', review)
+        self.assertNotIn('Send to 03b', self.client.get('/task/growth/task?as=reviewer').text)
+
+    def test_03a_handoff_disappears_when_signature_is_stale(self):
+        first = self.prepare_handoff()
+        first.write_text('Changed after sign-off', encoding='utf-8')
+        page = self.client.get('/task/growth/task?as=marketer')
+        self.assertNotIn('Send to 03b', page.text)
+
+    def test_03b_form_selects_only_clicked_03a_task(self):
+        self.prepare_handoff()
+        page = self.client.get('/new?agent=03b&source_task=task&as=marketer')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('name="source_task" value="task"', page.text)
+        self.assertIn('Example work', page.text)
+        self.assertIn('draft', page.text.lower())
+        self.assertIn('name="body"', page.text)
+
+    def test_03b_submission_uses_only_selected_signed_evidence(self):
+        first = self.prepare_handoff()
+        second = aos.BOARDS / 'growth' / 'second.md'
+        second.write_text('Different approved claims', encoding='utf-8')
+        con = sqlite3.connect(aos.BOARDS / 'growth' / 'kanban.db')
+        con.execute("INSERT INTO tasks (id,title,body,status,priority,assignee,tenant,created_at) VALUES ('other','Other research','brief','done',3,'test-profile','agent-03a',2)")
+        con.execute('INSERT INTO task_attachments VALUES (?,?,?,?,?,?,?,?)',
+                    (2, 'other', 'second.md', str(second), 'text/markdown', second.stat().st_size, 'fixture', 2))
+        con.commit()
+        con.close()
+        aos.sign('growth', 'other', 'reviewer', 'countersigner', 'approved',
+                 str(second), expected_hash=hashlib.sha256(second.read_bytes()).hexdigest())
+        calls = []
+        def kanban(board, *args):
+            calls.append(args)
+            return '{"id":"draft-task"}' if args[0] == 'create' else ''
+        with patch.object(aos, '_kanban', side_effect=kanban):
+            response = self.client.post('/new', data={
+                'user': 'marketer', 'agent_no': '03b', 'source_task': 'task',
+                'title': 'Draft article', 'body': 'Focus on the limitations.',
+                'priority': '3'}, follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        body = next(args for args in calls if args[0] == 'create')
+        self.assertIn('Reviewable output', body[body.index('--body') + 1])
+        self.assertNotIn('Different approved claims', body[body.index('--body') + 1])
+        self.assertIn(('link', 'task', 'draft-task'), calls)
+        self.assertNotIn(('link', 'other', 'draft-task'), calls)
+
+    def test_03b_submission_rechecks_approval_and_keeps_brief_on_refusal(self):
+        first = self.prepare_handoff()
+        first.write_text('Changed after sign-off', encoding='utf-8')
+        with patch.object(aos, '_kanban') as cli:
+            response = self.client.post('/new', data={
+                'user': 'marketer', 'agent_no': '03b', 'source_task': 'task',
+                'title': 'Draft article', 'body': 'Keep this brief', 'priority': '3'})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn('Keep this brief', response.text)
+        cli.assert_not_called()
+
+    def test_03b_requires_a_drafting_brief_before_dispatch(self):
+        self.prepare_handoff()
+        with patch.object(aos, '_kanban') as cli:
+            response = self.client.post('/new', data={
+                'user': 'marketer', 'agent_no': '03b', 'source_task': 'task',
+                'title': 'Draft article', 'body': '   ', 'priority': '3'})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn('drafting brief', response.text)
+        cli.assert_not_called()
+
+    def test_03b_cannot_use_a_non_03a_task_as_its_source(self):
+        self.prepare_handoff()
+        with patch.object(aos, '_kanban') as cli:
+            response = self.client.post('/new', data={
+                'user': 'marketer', 'agent_no': '03b', 'source_task': 'missing',
+                'title': 'Draft article', 'body': 'Write from evidence.', 'priority': '3'})
+        self.assertEqual(response.status_code, 422)
+        cli.assert_not_called()
+
+    def test_03b_refuses_bytes_changed_after_source_selection(self):
+        first = self.prepare_handoff()
+        gate = aos.gate_state('marketer', 'growth', '03b')
+        first.write_text('Modified after the source was checked', encoding='utf-8')
+        with self.assertRaises(aos.GateNotPassed):
+            aos._claim_set_body('Draft brief', gate)
+
     def test_green_file_preview_renders_contents(self):
         self.add_file()
         response = self.client.get('/file/people/task/1?as=owner')

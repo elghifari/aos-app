@@ -2,14 +2,21 @@
 {% block title %}AOS — {{ user }}{% endblock %}
 {% block body %}
 
-<header>
-  <h1>AOS</h1>
-  <div>
-    <span class="muted">{{ user }} · {{ agents|length }} agents · {{ boards|join(", ") }}</span>
-    <a href="/queue?as={{ user }}" style="margin-left:.7rem"><button class="small">Queue health</button></a>
-    <a href="/new?as={{ user }}"><button class="small primary">New task</button></a>
+<header class="site-header">
+  <a class="brand" href="/?as={{ user }}" aria-label="AOS home">
+    <span class="brand-mark" aria-hidden="true">AOS</span>
+    <span>Talenta AOS</span>
+  </a>
+  <div class="header-actions">
+    <span class="identity">{{ user }} · {{ agents|length }} agents</span>
+    <a class="button small" href="/queue?as={{ user }}">Queue health</a>
+    <a class="button primary" href="/new?as={{ user }}">New task</a>
   </div>
 </header>
+
+{% if env == "development" %}
+<div class="devbar">Development identity is active. This server must remain local.</div>
+{% endif %}
 
 {% if notice %}
 <dialog open class="notice">
@@ -19,184 +26,173 @@
 </dialog>
 {% endif %}
 
-{# ── The requester's own work, first ───────────────────────── #}
-{% if work.running or work.waiting or work.ready %}
-<h2>Your work</h2>
-
-{% for t in work.running %}
-<div class="card">
-  <div class="row">
-    <div>
-      <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
-      <div class="muted">{{ t.agent_name }} · <strong>Working on it now</strong></div>
-    </div>
+{% set active_count = (work.running|length) + (work.waiting|length) %}
+<section class="dispatch-hero" aria-labelledby="work-in-transit">
+  <div>
+    <h1 id="work-in-transit">Work in transit</h1>
+    <p>Track each commission from request to usable output. Holds interrupt the route; finished work stays recorded.</p>
   </div>
-</div>
-{% endfor %}
-
-{% for t in work.waiting %}
-<div class="card">
-  <div class="row">
-    <div>
-      <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
-      <div class="muted">{{ t.agent_name }} · {{ t.progress.label }}</div>
-    </div>
+  <div class="dispatch-summary" aria-label="Active work summary">
+    <strong>{{ active_count }}</strong>
+    <span>{{ "active commission" if active_count == 1 else "active commissions" }}</span>
+    <div class="small-copy">across {{ boards|length }} {{ "pod" if boards|length == 1 else "pods" }}</div>
   </div>
-</div>
-{% endfor %}
+</section>
 
-{% for t in work.ready %}
-<div class="card">
-  <div class="row">
-    <div>
-      <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
-      <div class="muted">{{ t.agent_name }} · Finished
-        {%- if t.deliverables %} · {{ t.deliverables }} file{{ "s" if t.deliverables != 1 }}{% endif %}</div>
-    </div>
-    <form method="post" action="/dismiss/{{ t.board }}/{{ t.id }}">
-      <input type="hidden" name="user" value="{{ user }}">
-      <button class="small" title="Clear from this list. The task and its files are kept.">Done</button>
-    </form>
-  </div>
-</div>
-{% endfor %}
-{% if work.ready_total > work.ready|length %}
-<p class="muted">
-  Showing the {{ work.ready|length }} most recent of {{ work.ready_total }} finished items.
-  The rest stay on each agent's page.
-</p>
-{% endif %}
-{% endif %}
-
-{# ── Review queue ─────────────────────────────────────────── #}
-<h2>Needs your signature
-  <span class="muted">({{ review|length }})</span>
-</h2>
-
-{% if review %}
-  {% for t in review %}
-  <div class="card amber">
-    <div class="row">
-      <div>
-        <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
-        <span class="tag amber">amber</span>
-        <div class="muted"><a href="/agent/{{ t.agent_no }}?as={{ user }}">{{ t.agent_name }}</a> · {{ t.board }}
-          {%- if t.deliverables %} · {{ t.deliverables }} file{{ "s" if t.deliverables != 1 }}{% endif %}</div>
+<div class="dashboard-grid">
+  <section class="dashboard-main" aria-labelledby="commissioned-work">
+    <div class="panel">
+      <div class="panel-title">
+        <h2 id="commissioned-work">Your commissioned work</h2>
+        <span class="small-copy">Current checkpoint shown on each route</span>
       </div>
-      <div class="age {{ 'over' if t.age_days > 10 }}">
-        {{ t.age_days }}d
-      </div>
-    </div>
-  </div>
-  {% endfor %}
-  {% if review | selectattr("age_days", ">", 10) | list %}
-  <p class="muted">Items over 10 days breach the playbook's review-queue-age target.</p>
-  {% endif %}
-{% else %}
-  <div class="empty">Nothing waiting. Amber outputs shipped without sign-off: zero.</div>
-{% endif %}
 
-{# ── Oversight ────────────────────────────────────────────── #}
-{% if oversight %}
-<h2>Unsigned elsewhere in your pods
-  <span class="muted">({{ oversight|length }})</span>
-</h2>
-{% for t in oversight %}
-<div class="card">
-  <div class="row">
-    <div>
-      <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
-      <span class="tag amber">amber</span>
-      <div class="muted"><a href="/agent/{{ t.agent_no }}?as={{ user }}">{{ t.agent_name }}</a>
-        · {{ t.board }} · not yours to sign</div>
-    </div>
-    <div class="age {{ 'over' if t.age_days > 10 }}">{{ t.age_days }}d</div>
-  </div>
-</div>
-{% endfor %}
-<p class="muted">
-  Visible for clinical oversight. Signing authority is per-agent, so these
-  are another owner's to sign.
-</p>
-{% endif %}
+      {% if work.running or work.waiting or work.ready %}
+        {% for t in work.running %}
+        <article class="manifest is-running">
+          <div>
+            <a class="manifest-title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+            <div class="manifest-meta">{{ t.agent_name }} · Working on it now</div>
+          </div>
+          <span class="status-stamp">In motion</span>
+          <ol class="route" aria-label="Task progress">
+            <li class="done">Commissioned</li><li class="current">Working</li><li>Output</li><li>Review if needed</li><li>Ready</li>
+          </ol>
+        </article>
+        {% endfor %}
 
-{# ── Blocked work ─────────────────────────────────────────── #}
-<h2>Stopped and won't restart
-  <span class="muted">({{ blocked|length }})</span>
-</h2>
+        {% for t in work.waiting %}
+        <article class="manifest">
+          <div>
+            <a class="manifest-title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+            <div class="manifest-meta">{{ t.agent_name }} · {{ t.progress.label }}</div>
+          </div>
+          <span class="status-stamp amber">Waiting</span>
+          <ol class="route" aria-label="Task progress">
+            <li class="done">Commissioned</li><li class="current">Waiting</li><li>Working</li><li>Output</li><li>Ready</li>
+          </ol>
+        </article>
+        {% endfor %}
 
-{% if blocked %}
-  {% for t in blocked %}
-  <div class="card warn">
-    <div class="row">
-      <div>
-        <span class="title">{{ t.title }}</span>
-        {% if t.zone %}<span class="tag {{ t.zone }}">{{ t.zone }}</span>{% endif %}
-        <div class="muted"><a href="/agent/{{ t.agent_no }}?as={{ user }}">{{ t.agent_name }}</a> · {{ t.board }}
-          · gave up after {{ t.consecutive_failures }} attempts</div>
-        {% if t.last_failure_error %}
-        <div class="err">{{ t.last_failure_error }}</div>
+        {% for t in work.ready %}
+        <article class="manifest">
+          <div>
+            <a class="manifest-title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+            <div class="manifest-meta">{{ t.agent_name }} · Finished{% if t.deliverables %} · {{ t.deliverables }} file{{ "s" if t.deliverables != 1 }}{% endif %}</div>
+          </div>
+          <form class="manifest-action" method="post" action="/dismiss/{{ t.board }}/{{ t.id }}">
+            <input type="hidden" name="user" value="{{ user }}">
+            <button class="small" title="Clear from this list. The task and its files are kept.">Done</button>
+          </form>
+          <ol class="route" aria-label="Task progress">
+            <li class="done">Commissioned</li><li class="done">Worked</li><li class="done">Output</li><li class="done">Review if needed</li><li class="current">Ready</li>
+          </ol>
+        </article>
+        {% endfor %}
+
+        {% if work.ready_total > work.ready|length %}
+        <p class="small-copy">Showing the {{ work.ready|length }} most recent of {{ work.ready_total }} finished items. Older work remains on each agent page.</p>
         {% endif %}
-      </div>
-      <div style="text-align:right">
-        <div class="age over">{{ t.stalled_hours }}h</div>
-        {% if t.can_retry %}
-        <form method="post" action="/unblock/{{ t.board }}/{{ t.id }}" style="margin-top:.4rem">
-          <input type="hidden" name="user" value="{{ user }}">
-          <button class="small">Retry</button>
-        </form>
-        {% else %}
-        <div class="muted" style="margin-top:.4rem; font-size:.78rem">owner retries</div>
-        {% endif %}
-      </div>
+      {% else %}
+        <div class="empty">No commissioned work is active. Start a task to put work on the route.</div>
+      {% endif %}
     </div>
-  </div>
-  {% endfor %}
-  <p class="muted">
-    The dispatcher stops after repeated failures and does not notify anyone.
-    Shared-quota exhaustion is the usual cause — the worker waits on a call
-    that never returns, then retries into the same wall.
-  </p>
-{% else %}
-  <div class="empty">No blocked work.</div>
-{% endif %}
+  </section>
 
-{# ── Agents owned ─────────────────────────────────────────── #}
-<h2>Your agents</h2>
-{% for e in grouped %}
-{% if e.kind == "family" %}
-<div class="card family">
-  <div class="row">
-    <div>
-      <a class="title" href="/family/{{ e.family_no }}?as={{ user }}">
-        <strong>{{ e.family_no }}</strong> {{ e.meta.name }}</a>
-      <span class="muted">· {{ e.stages|length }} stages with a human gate</span>
-    </div>
-    <span class="muted">{{ e.board }}</span>
-  </div>
-  <div class="stages">
-    {% for s in e.stages %}
-      <span class="stage {{ s.zone }}">{{ s.agent_no }}</span>
-      {% if e.meta.gate_after == s.agent_no %}<span class="gate-chip">gate</span>{% endif %}
-      {% if not loop.last %}<span class="arrow">&rarr;</span>{% endif %}
-    {% endfor %}
-  </div>
+  <aside class="dashboard-rail" aria-label="Attention queue">
+    <section class="panel" aria-labelledby="signature-heading">
+      <div class="panel-title"><h2 id="signature-heading">Needs your signature</h2><span class="status-stamp amber">{{ review|length }}</span></div>
+      {% if review %}
+      <div class="attention-list">
+        {% for t in review %}
+        <div class="attention-item">
+          <div class="attention-top">
+            <div>
+              <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+              <div class="small-copy"><a href="/agent/{{ t.agent_no }}?as={{ user }}">{{ t.agent_name }}</a> · {{ t.board }}{% if t.deliverables %} · {{ t.deliverables }} file{{ "s" if t.deliverables != 1 }}{% endif %}</div>
+            </div>
+            <span class="age {{ 'over' if t.age_days > 10 }}">{{ t.age_days }}d</span>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% if review | selectattr("age_days", ">", 10) | list %}<p class="small-copy">Items over 10 days breach the review-queue-age target.</p>{% endif %}
+      {% else %}
+      <div class="empty">Nothing is waiting. Amber outputs shipped without sign-off: zero.</div>
+      {% endif %}
+    </section>
+
+    <section class="panel" aria-labelledby="blocked-heading">
+      <div class="panel-title"><h2 id="blocked-heading">Stopped work</h2><span class="status-stamp {{ 'red' if blocked else '' }}">{{ blocked|length }}</span></div>
+      {% if blocked %}
+      <div class="attention-list">
+        {% for t in blocked %}
+        <div class="attention-item">
+          <div class="attention-top">
+            <div>
+              <a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a>
+              <div class="small-copy"><a href="/agent/{{ t.agent_no }}?as={{ user }}">{{ t.agent_name }}</a> · stopped after {{ t.consecutive_failures }} attempts</div>
+              {% if t.last_failure_error %}<div class="err">{{ t.last_failure_error }}</div>{% endif %}
+            </div>
+            <span class="age over">{{ t.stalled_hours }}h</span>
+          </div>
+          {% if t.can_retry %}
+          <form method="post" action="/unblock/{{ t.board }}/{{ t.id }}" style="margin-top:.6rem"><input type="hidden" name="user" value="{{ user }}"><button class="small">Retry</button></form>
+          {% else %}
+          <div class="small-copy" style="margin-top:.45rem">The assigned owner must retry this task.</div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      <p class="small-copy">The dispatcher stops after repeated failures. Shared-quota exhaustion is a common cause.</p>
+      {% else %}
+      <div class="empty">No work is blocked.</div>
+      {% endif %}
+    </section>
+
+    {% if oversight %}
+    <section class="panel" aria-labelledby="oversight-heading">
+      <div class="panel-title"><h2 id="oversight-heading">Unsigned in your pods</h2><span class="status-stamp amber">{{ oversight|length }}</span></div>
+      <div class="attention-list">
+        {% for t in oversight %}
+        <div class="attention-item">
+          <div class="attention-top">
+            <div><a class="title" href="/task/{{ t.board }}/{{ t.id }}?as={{ user }}">{{ t.title }}</a><div class="small-copy"><a href="/agent/{{ t.agent_no }}?as={{ user }}">{{ t.agent_name }}</a> · another owner's signature</div></div>
+            <span class="age {{ 'over' if t.age_days > 10 }}">{{ t.age_days }}d</span>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      <p class="small-copy">Visible for oversight. Signing authority remains assigned per agent.</p>
+    </section>
+    {% endif %}
+  </aside>
 </div>
-{% else %}
-{% set a = e.agent %}
-<div class="card">
-  <div class="row">
-    <div>
-      <a class="title" href="/agent/{{ a.agent_no }}?as={{ user }}">
-        <strong>{{ a.agent_no }}</strong> {{ a.name }}</a>
-      <span class="tag {{ a.zone }}">{{ a.zone }}</span>
-      {% if not a.is_agentic %}<span class="muted">· no worker ({{ a.delivery_box }})</span>{% endif %}
+
+<section aria-labelledby="agents-heading">
+  <div class="section-head"><h2 id="agents-heading">Your agents</h2><span class="small-copy">Choose an agent to see its guardrail and full history</span></div>
+  {% for e in grouped %}
+    {% if e.kind == "family" %}
+    <div class="card family">
+      <div class="row">
+        <div><a class="title" href="/family/{{ e.family_no }}?as={{ user }}"><strong>{{ e.family_no }}</strong> {{ e.meta.name }}</a><span class="muted"> · {{ e.stages|length }} stages with a human gate</span></div>
+        <span class="small-copy">{{ e.board }}</span>
+      </div>
+      <div class="stages">
+        {% for s in e.stages %}<span class="stage {{ s.zone }}">{{ s.agent_no }}</span>{% if e.meta.gate_after == s.agent_no %}<span class="gate-chip">gate</span>{% endif %}{% if not loop.last %}<span class="arrow" aria-hidden="true">→</span>{% endif %}{% endfor %}
+      </div>
     </div>
-    <span class="muted">{{ a.ownership }}</span>
-  </div>
-  <div class="guard">{{ a.guardrail }}</div>
-</div>
-{% endif %}
-{% endfor %}
+    {% else %}
+    {% set a = e.agent %}
+    <div class="card">
+      <div class="row">
+        <div><a class="title" href="/agent/{{ a.agent_no }}?as={{ user }}"><strong>{{ a.agent_no }}</strong> {{ a.name }}</a> <span class="tag {{ a.zone }}">{{ a.zone }}</span>{% if not a.is_agentic %}<span class="muted"> · no worker ({{ a.delivery_box }})</span>{% endif %}</div>
+        <span class="small-copy">{{ a.ownership }}</span>
+      </div>
+      <div class="guard">{{ a.guardrail }}</div>
+    </div>
+    {% endif %}
+  {% endfor %}
+</section>
 
 {% endblock %}
