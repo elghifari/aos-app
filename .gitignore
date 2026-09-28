@@ -107,6 +107,8 @@ aos.log
 demo.sh
 rehearse.sh
 .rehearsal-watermark
+anti-slop/
+HANDOVER.md
 
 *.docx
 *.doc
