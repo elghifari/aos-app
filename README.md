@@ -1,171 +1,150 @@
-# AOS — Talenta Agentic Operating System
+# AOS
 
-The human-facing layer for Talenta's AI agent roster. Hermes owns the agent
-runtime; this app owns **who may request and see work**, **what needs human
-review**, and **the recorded artifact-bound signature**.
+AOS is the internal web app Talenta staff use to hand work to AI agents and to
+sign off on what comes back. Talenta runs a mental-health clinic, schools, and
+a research institute, so a lot of that work sits close to patients, students,
+or hiring. The app exists to keep that work reviewable.
 
-Full architecture: the `aos` Hermes skill, `references/architecture.md`.
-Governance (Red Zone, roster, briefs, rhythm): same skill, other references.
+A staff member picks an agent they own, writes a short brief, and gets a task
+page that shows progress and the files the agent produced. For Green zone
+agents, the owner reviews the output and ships it. For Amber agents, a named
+qualified person has to approve the exact file before anyone can download it.
+Some work is never given to AI at all: clinical decisions, reading clinical
+results, crisis conversations, patient-identifiable data, and hiring
+decisions. That list is the Red Zone, and nothing in this app is meant to
+touch it.
 
-## What this is
+## How it is built
 
-| Layer | Owns |
-| :--- | :--- |
-| Hermes | profiles, gateway, kanban dispatcher, cron, skills |
-| Board DBs (`~/.hermes/kanban/boards/<pod>/kanban.db`) | data plane |
-| **This app** | employee task UI, pod authorization, review gates, approvals |
+The agents run on [Hermes](https://github.com/NousResearch/hermes-agent). Each
+pod has a Hermes profile (its model, tools, and skills) and a kanban board (a
+SQLite file of tasks, runs, and attachments). A Hermes dispatcher picks up
+assigned tasks and starts a worker process for each one.
 
-Board data is read directly from SQLite. Task creation, assignment, linking,
-unblocking, and dispatch go through `hermes kanban` so Hermes retains those
-invariants. Dismissing finished work is the narrow exception: AOS changes only
-`tasks.status` to `archived` in the WAL-backed board DB, avoiding about two
-seconds of CLI startup for one field update.
-
-## Authorization
-
-Board-per-pod is the boundary — each pod's board is a physically separate SQLite
-DB. Authz is a lookup, checked before any query touches disk:
-
-```python
-if board not in boards_for(user):
-    raise PermissionError
-```
-
-Six pods: `p1-growth`, `p2-access`, `p3-people`, `p4-quality`, `p5-research`,
-`p6-education`.
-
-## The approvals table
-
-Kanban `status: done` means *the worker finished* — not that anyone signed.
-`approvals` records who signed, when, and **`artifact_hash`** (sha256 of the
-exact bytes reviewed), so a deliverable swapped after sign-off is detectable.
-
-Playbook metric: **Amber outputs shipped without sign-off must be zero.**
-`unsigned_amber()` implements the review queue with age.
-
-## Layout
+AOS sits beside Hermes and keeps track of what Hermes doesn't: which person
+owns which agent, who can see which board, and who signed off on what.
 
 ```
-aos.py            authz, task lifecycle, gates, approval and integrity state
-web.py            FastAPI routes and development identity handling
-registry.py       agent registry + ownership
-seed_registry.py  seeds 25 roles from the playbook roster
-templates/        employee, reviewer, agent, and pipeline views
-tests/            isolated stdlib unittest suite; temporary DBs only
-approvals.db      signature store (gitignored — audit data)
-registry.db       agent/owner store (gitignored — regenerate via seed)
-demo.sh           prepares a clean local demo without replacing the UI
-rehearse.sh        marks and resets rehearsal-created board state
+browser ──> web.py (FastAPI + Jinja templates)
+               │
+               ├── aos.py ── reads board DBs directly, read-only
+               │         └── writes through the `hermes kanban` CLI
+               ├── registry.db   agents, pods, owners, signers
+               └── approvals.db  signatures
 ```
 
-## The agent registry
+Reads go straight to each board's SQLite file. Writes (create, assign, link,
+dispatch) go through the Hermes CLI so Hermes keeps control of its own schema.
+The one exception is dismissing a finished task, which sets `tasks.status` to
+`archived` directly because the CLI call took about two seconds for a single
+field.
 
-`tasks` is Hermes-owned and `hermes update` migrates it, so AOS adds no columns
-there. Tasks link to an agent through Hermes's native **`tenant`** field
-(`agent-10`); everything else lives in `registry.db`.
+Each pod has its own database file, and a user can only open boards for pods
+where they own or sign for an agent. That check runs before any query touches
+disk.
 
-Two facts the kanban schema cannot express:
+A signature in `approvals.db` records the signer, their role, the decision,
+and the SHA-256 of the file they reviewed. If the file changes after signing,
+the download is refused. Kanban's own `done` status only means the worker
+finished, so AOS never treats it as approval.
 
-**A human owns an agent.** `tasks.assignee` is a *profile*, not a person.
-Ownership is many-to-many — the Clinical Director countersigns 11 agents across
-4 pods. `boards_for()` is *derived* from agent ownership, so there is no
-separate access map to drift out of sync with the roster.
+Agent 03 has two extra controls in code. 03a produces an evidence table and
+03b drafts from it, as separate tasks. A 03b task can only be created from a
+03a task whose current file has been approved, and it receives only those
+approved files. The drafting profile has no web access. Separately, if the
+evidence search logged errors during a 03a run, the task is held for review
+even when the worker reports success.
 
-**12 of 25 roles have no Hermes worker.** 6 are deterministic n8n pipelines,
-6 are human seat work. They still need tasks, deliverables, and signatures.
+## Pods and agents
 
-| Delivery box | Count | Worker? |
-| :--- | ---: | :--- |
-| `n8n+agent` | 5 | yes |
-| `agent` | 8 | yes |
-| `n8n` | 6 | no — deterministic pipeline |
-| `seat` | 6 | no — human |
+The roster comes from Section 18 of the clinic marketing playbook: 20 roles in
+six pods, each pod with one accountable owner. Roles 03, 07, and 11 each mix a
+safety gate with other work, so they are split into stages (03a/03b,
+07a/07b/07c, 11a/11b/11c). That gives 25 rows in the registry.
 
-25 rather than 20 because composites split: 03a/03b, 07a/07b/07c, 11a/11b/11c.
+Only 13 of those 25 have an AI worker. Six are fixed-step pipelines planned
+for n8n (04, 07a, 07b, 08, 11b, 11c), and six are seat work that a person does
+and records in the app (06, 13, 15, 18, 19, 20). The registry refuses to give
+a Hermes profile to a non-agentic role, so the 07a risk-language gate can
+never end up behind a model.
 
-Consequences enforced in code:
-- `create_task()` assigns a profile **only** for agentic roles, then dispatches
-  immediately. Non-agentic tasks are deliberately left unassigned.
-- `register()` refuses to attach a profile to a non-agentic role — 07a's
-  deterministic gate cannot accidentally be given a model.
-- `complete_by_human()` refuses to close a task belonging to an agentic role.
-- Agent 03 is split in code: 03b cannot start until a qualified signer approves
-  a current 03a artifact. On an approved 03a task, the owner can use **Send to
-  03b** in Review state, then enter a title and drafting brief. Only that task's
-  approved files and SHA-256 provenance are injected into 03b. Submission
-  rechecks approval and file bytes; the drafter profile has no web access.
-- 03a standing evidence rules are prepended to every task, so employees can use
-  short briefs without having to repeat citation and KURI controls.
-- Evidence-tool failures are correlated against the run window. A degraded run
-  is held for human review rather than trusted because the worker reported
-  success; a qualified signature clears the warning for those exact bytes.
+| Pod | Board | Agents with a worker | Pipeline or seat roles |
+| :-- | :-- | :-- | :-- |
+| P1 Growth | `p1-growth` | 01, 02, 03a, 03b, 05 | 04, 06 |
+| P2 Patient Access | `p2-access` | 07c, 09 | 07a, 07b, 08 |
+| P3 People | `p3-people` | 10, 11a, 12 | 11b, 11c, 13 |
+| P4 Clinical Ops & Quality | `p4-quality` | 14, 16 | 15 |
+| P5 Research (IIMH) | `p5-research` | 17 | 18 |
+| P6 Education | `p6-education` | none | 19, 20 |
 
-Seeded owners are **placeholders** (`u_hr`, `u_clinical_director`). Real
-identities come from HR; nothing in the registry is real until then.
+On the development machine all six boards and profiles exist, plus
+`p1-drafting` for 03b. P1, P3, P4, and P5 have had real tasks: 02, 03a, 03b,
+05, 06, 10, 11a, 12, 13, 14, and 17. P2 and P6 have none yet, and none of the
+n8n pipelines are built.
 
-## First-time initialization
+Owners and signers in the registry are placeholders such as `u_marketing` and
+`u_clinical_director` until HR supplies real identities.
 
-**Do not run `seed_registry.py` against the live registry yet.** Its 03b row
-still says `seat` rather than the approved agentic `p1-drafting` configuration;
-fix that mismatch before reseeding. For a fresh, empty local registry only:
+## Running it locally
+
+You need Windows, Python 3.11 or newer, and a working Hermes install. `aos.py`
+looks for Hermes at `%LOCALAPPDATA%\hermes`, so on Linux or macOS you would
+have to change that path first.
+
+```bash
+pip install fastapi uvicorn jinja2 python-multipart psutil
+```
+
+Create a board and a profile in Hermes for each pod you want to try:
+
+```bash
+hermes kanban boards create p1-growth --name "P1 · Growth"
+hermes profile create pod-p1-growth --description "P1 Growth pod"
+```
+
+Then create the two local databases:
 
 ```bash
 python -c "import aos; aos.init_approvals()"
 python seed_registry.py
 ```
 
-Requires a Hermes install with boards under `$LOCALAPPDATA/hermes/kanban/boards/`
-(Windows) — paths are resolved in `aos.py`.
-
-## Running
+Start and stop the server:
 
 ```bash
-./run.sh     # detached; survives the shell that launched it
+./run.sh
 ./stop.sh
 ```
 
-The development UI is available at `http://127.0.0.1:8077`. Identity is still a
-local-only `?as=<user>` parameter; do not expose this server to other machines.
+`run.sh` detaches the server so it keeps running after the shell closes, and
+writes the listener's PID to `.aos.pid`. Open
+`http://127.0.0.1:8077/?as=u_marketing` to use the app as the P1 owner, or put
+another registry user after `?as=`. That parameter is the only login, so keep
+the server on localhost.
 
-## Testing
+Agent tasks only run if the pod's profile has a working model and something is
+dispatching: either the Hermes gateway, or
+`hermes kanban --board <board> dispatch` by hand.
+
+The tests use temporary databases and never call a model:
 
 ```bash
 python -m unittest discover -s tests
+bash tests/test_run_script.sh
 ```
 
-The suite uses temporary registries, board DBs, approval DBs, filesystems, and
-profile logs. It neither reads nor writes live approvals and never calls an LLM.
+## Not built yet
 
-## Documentation
+Real login, uploads for seat work, a way for staff to answer an agent's
+question or ask for a revision, the n8n pipelines, and deployment.
+`.env.example` lists login and session settings that the code does not read
+yet.
 
-| File | For |
-| :--- | :--- |
-| `HANDOVER.md` | next engineering session — verified state, current work, known gaps |
-| `ARCHITECTURE.md` | current implementation, boundaries, data flow, known defects |
-| `DECISIONS.md` | record of guardrail/zone/signer changes |
-| `PRODUCT.md`, `DESIGN.md` | product constraints and visual tokens for the server-rendered UI |
-| `anti-slop/audit-001-2026-09-22.md` | post-build UI/accessibility findings |
+## Other docs
 
-## Status
+`ARCHITECTURE.md` goes deeper on boundaries, data flow, and known defects.
+`DECISIONS.md` records changes to guardrails, zones, and signers. `PRODUCT.md`
+and `DESIGN.md` hold the product constraints and visual tokens for the UI.
 
-**Working:** 13 application routes covering employee work, queue health, task
-creation, agent and composite views, task progress, review-only file preview,
-artifact-bound approve/reject, gated download, unblock, and non-destructive
-archive. The home page separates running, waiting, and finished work; finished
-items are capped and can be cleared without destroying their audit history.
-
-Enforcement includes cross-pod authorization, qualified per-agent signers,
-current-byte approval hashes, tamper detection, rejection state, unsigned Amber
-release refusal, 03a→03b gate provenance, degraded evidence-run holds,
-non-agentic role isolation, immediate dispatch, and safe redirect handling.
-
-**Not built:** real authentication and sessions · seat-work upload · deployment ·
-real owner identities · employee clarification/revision loop · capability
-proposal/IT approval interface.
-
-## Rules
-
-- **Never commit `*.db`.** `approvals.db` is audit data.
-- **Never commit generated deliverables.** They may contain organisational data.
-- **No patient-identifiable data anywhere in this repo.** Red Zone item 4.
-- Authz and release gates are enforced in code, never by prompting a model.
+Don't commit `*.db` files or agent deliverables, and don't put
+patient-identifiable data anywhere in this repo.

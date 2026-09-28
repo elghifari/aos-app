@@ -7,13 +7,14 @@ R.init_registry()
 # Placeholders. Real names/IDs come from HR; one person may own several agents.
 P1, P3, P5 = "u_marketing", "u_hr", "u_research"
 OPS, QUAL, EDU, CD = "u_ops", "u_quality", "u_principal", "u_clinical_director"
+CW = "u_content_writer"
 
 AGENTS = [
     # no,  name,                         board,        zone,   box,          profile,           cadence,     guardrail,                                                     owners
     ("01", "SEO Technical Auditor",      "p1-growth",  "green","n8n+agent",  "pod-p1-growth",   "weekly",    "Cannot deploy. Output is a ticket list for the web vendor.",   [(P1,"owner")]),
     ("02", "Keyword & Content Strategist","p1-growth", "green","agent",      "pod-p1-growth",   "weekly",    "Must use real volume data. Cannot invent search volumes.",     [(P1,"owner")]),
-    ("03a","Clinical Evidence Table",    "p1-growth",  "amber","agent",      "pod-p1-growth",   "per piece", "Evidence table only. No prose, no draft. KURI ceiling at this stage.", [(P1,"owner"),(CD,"countersigner")]),
-    ("03b","Clinical Content Drafter",   "p1-growth",  "amber","seat",       None,              "per piece", "Drafts from the APPROVED CLAIM SET only. Never researches and writes in one pass. BELUM DIREVIEW watermark until signed.", [(P1,"owner"),(CD,"countersigner")]),
+    ("03a","Clinical Evidence Table",    "p1-growth",  "amber","agent",      "pod-p1-growth",   "per piece", "Evidence table only. No prose, no draft. KURI ceiling at this stage.", [(P1,"owner"),(CD,"countersigner"),(CW,"consumer")]),
+    ("03b","Clinical Content Drafter",   "p1-growth",  "amber","agent",      "p1-drafting",     "per piece", "Drafts ONLY from the signed claim set in the task. No web, no browser, no memory — enforced by toolset, not prompt. Every clinical statement carries a claim marker [C3]. Cannot fill a gap the claim set does not support. BELUM DIREVIEW watermark until the Clinical Director signs.", [(P1,"owner"),(CD,"countersigner")]),
     ("04", "GA4 & Funnel Analyst",       "p1-growth",  "green","n8n",        None,              "weekly",    "Aggregate exports only. No user-level data. Never condition-based audiences.", [(P1,"owner")]),
     ("05", "Local SEO & Reputation",     "p1-growth",  "amber","n8n+agent",  "pod-p1-growth",   "weekly",    "Any review alleging a clinical issue routes to Clinical Director and EXITS the agent workflow.", [(P1,"owner"),(CD,"countersigner")]),
     ("06", "Paid Media Operator",        "p1-growth",  "amber","seat",       None,              "weekly",    "Clinical-and-legal gate before live. No superiority/cure claims, no crisis-page retargeting.", [(P1,"owner"),(CD,"countersigner")]),
