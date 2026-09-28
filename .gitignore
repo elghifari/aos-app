@@ -102,6 +102,12 @@ tmp/
 .aos.pid
 aos.log
 
+.hermes-tmp.*
+.impeccable/
+demo.sh
+rehearse.sh
+.rehearsal-watermark
+
 *.docx
 *.doc
 *.xlsx
@@ -116,4 +122,3 @@ aos.log
 *.7z
 *.tar
 *.tar.gz
-!AOS_agent_decisions.xlsx
