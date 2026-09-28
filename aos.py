@@ -19,12 +19,29 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 import registry as R
 
-HERMES = Path(os.environ["LOCALAPPDATA"]) / "hermes"
+
+def hermes_root() -> Path:
+    """The Hermes install root that holds kanban/boards and profiles/.
+
+    HERMES_HOME is ignored on purpose: Hermes sets it to a single profile's
+    folder when running as that profile, which would hide every board.
+    """
+    override = os.environ.get("AOS_HERMES_ROOT", "").strip()
+    if override:
+        return Path(os.path.expandvars(override)).expanduser()
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA", "").strip()
+        return (Path(base) if base else Path.home() / "AppData" / "Local") / "hermes"
+    return Path.home() / ".hermes"
+
+
+HERMES = hermes_root()
 BOARDS = HERMES / "kanban" / "boards"
 APPROVALS_DB = Path(__file__).parent / "approvals.db"
 

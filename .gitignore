@@ -109,6 +109,7 @@ rehearse.sh
 .rehearsal-watermark
 anti-slop/
 HANDOVER.md
+preview/
 
 *.docx
 *.doc

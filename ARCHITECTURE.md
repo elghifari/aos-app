@@ -121,10 +121,12 @@ FastAPI + Jinja AOS app (localhost:8077)
 
 ### 2.1 Six pod boards
 
-Each pod has a separate SQLite board DB under the active Hermes home:
+Each pod has a separate SQLite board DB under the Hermes install root
+(`aos.hermes_root()`: `AOS_HERMES_ROOT` if set, otherwise
+`%LOCALAPPDATA%\hermes` on Windows and `~/.hermes` elsewhere):
 
 ```text
-$HERMES_HOME/kanban/boards/<board>/kanban.db
+<hermes root>/kanban/boards/<board>/kanban.db
 ```
 
 Boards:

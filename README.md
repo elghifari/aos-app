@@ -87,9 +87,8 @@ Owners and signers in the registry are placeholders such as `u_marketing` and
 
 ## Running it locally
 
-You need Windows, [uv](https://docs.astral.sh/uv/), and a working Hermes
-install. `aos.py` looks for Hermes at `%LOCALAPPDATA%\hermes`, so on Linux or
-macOS you would have to change that path first.
+You need [uv](https://docs.astral.sh/uv/) and a working Hermes install. It runs
+on Windows, Linux, and macOS.
 
 ```bash
 uv sync
@@ -99,6 +98,19 @@ That creates `.venv` with Python 3.11 and the versions pinned in `uv.lock`.
 You don't need to activate it: `run.sh`, `stop.sh`, and the commands below go
 through `uv run`, so they use the project environment whichever `python` is
 first on your PATH.
+
+AOS reads boards and profiles from the Hermes install root. By default that is
+`%LOCALAPPDATA%\hermes` on Windows and `~/.hermes` on Linux and macOS. If your
+install lives somewhere else, point AOS at it before starting:
+
+```bash
+export AOS_HERMES_ROOT=/srv/hermes
+```
+
+It has to be the root folder, the one containing `kanban/boards/` and
+`profiles/`, not a single profile's folder. AOS ignores `HERMES_HOME` on
+purpose, because Hermes sets that to a profile folder when it runs as a
+profile.
 
 Create a board and a profile in Hermes for each pod you want to try:
 
