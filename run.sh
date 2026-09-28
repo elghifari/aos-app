@@ -12,21 +12,25 @@ if [ "$(curl --max-time 2 -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$P
   exit 0
 fi
 
-AOS_ENV=development nohup python -m uvicorn web:app \
+if ! command -v uv >/dev/null 2>&1; then
+  echo "uv not found. Install it from https://docs.astral.sh/uv/ and rerun." >&2
+  exit 1
+fi
+
+# uv creates .venv from uv.lock on first run, so PATH order never picks the interpreter.
+AOS_ENV=development nohup uv run python -m uvicorn web:app \
   --host 127.0.0.1 --port "$PORT" > "$LOG" 2>&1 &
 disown 2>/dev/null
 
-# Do not trust $! for the pidfile. On Windows git-bash the `python` launcher
-# re-execs the real runtime python as a child, so $! points at an intermediate
-# that exits immediately. Resolve the real listener once the port is up.
-for attempt in {1..30}; do
+# $! is uv, not the server, so resolve the real listener once the port is up.
+for attempt in {1..60}; do
   if [ "$(curl --max-time 2 -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/?as=u_marketing" 2>/dev/null)" = "200" ]; then
-    python -c "import psutil,sys; print(next(p.pid for p in psutil.process_iter() if any(c.laddr.port==$PORT for c in p.net_connections(kind='inet') if c.status=='LISTEN')))" > "$PIDFILE" 2>/dev/null
+    uv run python -c "import psutil; print(next(p.pid for p in psutil.process_iter() if any(c.laddr.port==$PORT for c in p.net_connections(kind='inet') if c.status=='LISTEN')))" > "$PIDFILE" 2>/dev/null
     echo "up -> http://127.0.0.1:$PORT/?as=u_marketing (pid $(cat "$PIDFILE"))"
     exit 0
   fi
   sleep 1
 done
 
-echo "failed to start — see $LOG" >&2
+echo "failed to start, see $LOG" >&2
 exit 1

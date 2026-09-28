@@ -9,7 +9,7 @@ if [ -f "$PIDFILE" ]; then
   kill "$(cat "$PIDFILE")" 2>/dev/null && echo "stopped $(cat "$PIDFILE")"
   rm -f "$PIDFILE"
 fi
-python -c "
+uv run python -c "
 import psutil
 for p in psutil.process_iter():
     try:

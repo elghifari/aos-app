@@ -6,8 +6,8 @@ trap 'cd "$ROOT"; rm -rf "$WORK" 2>/dev/null || true' EXIT
 cp "$ROOT/run.sh" "$WORK/run.sh"
 printf '999999\n' > "$WORK/.aos.pid"
 cd "$WORK"
-printf '#!/usr/bin/env bash\n: > launched\n' > python
-chmod +x python
+printf '#!/usr/bin/env bash\n: > launched\n' > uv
+chmod +x uv
 export PATH="$WORK:$PATH"
 curl() { printf 200; }
 sleep() { :; }

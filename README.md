@@ -87,13 +87,18 @@ Owners and signers in the registry are placeholders such as `u_marketing` and
 
 ## Running it locally
 
-You need Windows, Python 3.11 or newer, and a working Hermes install. `aos.py`
-looks for Hermes at `%LOCALAPPDATA%\hermes`, so on Linux or macOS you would
-have to change that path first.
+You need Windows, [uv](https://docs.astral.sh/uv/), and a working Hermes
+install. `aos.py` looks for Hermes at `%LOCALAPPDATA%\hermes`, so on Linux or
+macOS you would have to change that path first.
 
 ```bash
-pip install fastapi uvicorn jinja2 python-multipart psutil
+uv sync
 ```
+
+That creates `.venv` with Python 3.11 and the versions pinned in `uv.lock`.
+You don't need to activate it: `run.sh`, `stop.sh`, and the commands below go
+through `uv run`, so they use the project environment whichever `python` is
+first on your PATH.
 
 Create a board and a profile in Hermes for each pod you want to try:
 
@@ -105,8 +110,8 @@ hermes profile create pod-p1-growth --description "P1 Growth pod"
 Then create the two local databases:
 
 ```bash
-python -c "import aos; aos.init_approvals()"
-python seed_registry.py
+uv run python -c "import aos; aos.init_approvals()"
+uv run python seed_registry.py
 ```
 
 Start and stop the server:
@@ -129,7 +134,7 @@ dispatching: either the Hermes gateway, or
 The tests use temporary databases and never call a model:
 
 ```bash
-python -m unittest discover -s tests
+uv run python -m unittest discover -s tests
 bash tests/test_run_script.sh
 ```
 
