@@ -1,10 +1,18 @@
+import asyncio
 import hashlib
+import http.client
 import sqlite3
+import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from urllib.parse import urlencode
 from unittest.mock import patch
 
+import uvicorn
+from fastapi import BackgroundTasks, Request
 from fastapi.testclient import TestClient
 
 import aos
@@ -105,6 +113,95 @@ class WebPathsTests(unittest.TestCase):
         self.assertIn('Example work', page.text)
         self.assertIn('draft', page.text.lower())
         self.assertIn('name="body"', page.text)
+
+    def test_create_forms_have_accessible_submit_feedback(self):
+        for url in ('/new?as=marketer', '/new?agent=03a&as=marketer'):
+            with self.subTest(url=url):
+                page = self.client.get(url)
+                self.assertEqual(page.status_code, 200)
+                self.assertIn('data-create-form', page.text)
+                self.assertIn('id="create-progress" role="status"', page.text)
+                self.assertIn("addEventListener('submit'", page.text)
+
+    def test_create_cli_failure_keeps_brief_and_avoids_internal_error(self):
+        with patch.object(aos, '_kanban', side_effect=subprocess.CalledProcessError(
+                1, ['hermes', 'kanban'], stderr='invalid completion contract')):
+            response = self.client.post('/new', data={
+                'user': 'marketer', 'agent_no': '03a',
+                'title': 'Evidence trial', 'body': 'Find two papers.',
+                'priority': '1'})
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('Evidence trial', response.text)
+        self.assertIn('Find two papers.', response.text)
+        self.assertIn('check the board before trying again', response.text)
+        self.assertNotIn('invalid completion contract', response.text)
+
+    def test_agentic_create_returns_before_dispatch_and_opens_queued_task(self):
+        jobs = BackgroundTasks()
+        request = Request({'type': 'http', 'query_string': b'', 'headers': []})
+        with patch.object(aos, '_kanban', return_value='{"id":"new"}') as cli:
+            response = web.create_task_post(
+                request, jobs, agent_no='03a', title='Evidence trial',
+                body='Find two papers.', priority=1, user='marketer')
+            self.assertEqual(response.status_code, 303)
+            self.assertIn('/task/growth/new?', response.headers['location'])
+            self.assertEqual([c.args[1] for c in cli.call_args_list], ['create'])
+            create = cli.call_args_list[0].args
+            self.assertEqual(create[create.index('--assignee') + 1], 'test-profile')
+            con = sqlite3.connect(aos.BOARDS / 'growth' / 'kanban.db')
+            con.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                        ('new', 'Evidence trial', 'Find two papers.', 'ready', 1,
+                         'test-profile', 'agent-03a', '', None, 0, None, None, 2))
+            con.commit()
+            con.close()
+            page = self.client.get(response.headers['location'])
+            self.assertEqual(page.status_code, 200)
+            self.assertIn('Queued', page.text)
+            self.assertIn('Waiting for a worker to start.', page.text)
+            asyncio.run(jobs())
+            self.assertEqual([c.args[1] for c in cli.call_args_list], ['create', 'dispatch'])
+
+    def test_http_redirect_is_sent_while_dispatch_is_still_running(self):
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+
+        def delayed_dispatch(board):
+            started.set()
+            release.wait(timeout=5)
+            finished.set()
+
+        server = uvicorn.Server(uvicorn.Config(
+            web.app, host='127.0.0.1', port=0, access_log=False,
+            log_level='error', lifespan='off', ws='none'))
+        thread = threading.Thread(target=lambda: asyncio.run(server.serve()), daemon=True)
+        with patch.object(aos, 'create_task', return_value='fixture-task'), \
+                patch.object(aos, 'dispatch_task', side_effect=delayed_dispatch):
+            thread.start()
+            try:
+                deadline = time.monotonic() + 5
+                while not server.started and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue(server.started)
+                port = server.servers[0].sockets[0].getsockname()[1]
+                connection = http.client.HTTPConnection('127.0.0.1', port, timeout=3)
+                try:
+                    connection.request('POST', '/new', urlencode({
+                        'agent_no': '03a', 'title': 'Evidence trial',
+                        'body': 'Find two papers.', 'user': 'marketer',
+                    }), {'Content-Type': 'application/x-www-form-urlencoded'})
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 303)
+                    self.assertIn('fixture-task', response.getheader('Location'))
+                    response.read()
+                    self.assertTrue(started.wait(timeout=3))
+                    self.assertFalse(finished.is_set())
+                finally:
+                    connection.close()
+            finally:
+                release.set()
+                server.should_exit = True
+                thread.join(timeout=5)
 
     def test_03b_submission_uses_only_selected_signed_evidence(self):
         first = self.prepare_handoff()

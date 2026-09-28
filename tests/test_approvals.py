@@ -138,7 +138,7 @@ class ApprovalStateTests(unittest.TestCase):
 
         create = next(c for c in calls if c[0] == 'create')
         body = create[create.index('--body') + 1]
-        self.assertEqual(create[create.index('--completion-contract') + 1], 'artifact-required')
+        self.assertNotIn('--completion-contract', create)
         self.assertIn('include every output file in kanban_complete artifacts', body)
 
     def test_creating_work_for_an_agent_dispatches_it_immediately(self):
@@ -147,10 +147,10 @@ class ApprovalStateTests(unittest.TestCase):
         with patch.object(aos, '_kanban', return_value='{"id":"new"}') as cli:
             aos.create_task('owner', 'one', '94', 'Draft a JD', 'brief')
         calls = [c.args[1] for c in cli.call_args_list]
-        self.assertIn('dispatch', calls)
-        # Dispatch must come after create and assign, or there is nothing
-        # for the dispatcher to claim.
-        self.assertGreater(calls.index('dispatch'), calls.index('assign'))
+        create = next(c.args for c in cli.call_args_list if c.args[1] == 'create')
+        self.assertEqual(create[create.index('--assignee') + 1], 'p')
+        self.assertNotIn('assign', calls)
+        self.assertGreater(calls.index('dispatch'), calls.index('create'))
 
     def test_seat_work_is_not_dispatched(self):
         R.register('95', 'FTE model', 'one', 'green', 'seat', 'Human work.',
@@ -199,8 +199,9 @@ class ApprovalStateTests(unittest.TestCase):
         self.assertIn('APPROVED CLAIM SET', body)
         self.assertIn('1.txt', body)
         self.assertIn('brief', body)
-        # And provenance is recorded as a link, not prose.
-        self.assertTrue(any(c.args[1] == 'link' for c in cli.call_args_list))
+        self.assertNotIn('--assignee', call)
+        calls = [c.args[1] for c in cli.call_args_list]
+        self.assertLess(calls.index('link'), calls.index('assign'))
 
     def test_ungated_agents_are_unaffected(self):
         with patch.object(aos, '_kanban', return_value='{"id": "x"}'):

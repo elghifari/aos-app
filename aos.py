@@ -378,6 +378,12 @@ def _kanban(board: str, *args: str) -> str:
     return subprocess.run(cmd, capture_output=True, text=True,
                           check=True).stdout
 
+def dispatch_task(board: str) -> None:
+    try:
+        _kanban(board, "dispatch")
+    except (subprocess.CalledProcessError, OSError):
+        pass
+
 
 def creatable_agents(user: str) -> list[dict]:
     """Agents this person may create work for — the ones they own.
@@ -550,7 +556,8 @@ def brief_for_display(task: dict) -> str:
 
 
 def create_task(user: str, board: str, agent_no: str, title: str, body: str,
-                priority: int = 3, source_task: str | None = None) -> str:
+                priority: int = 3, source_task: str | None = None,
+                dispatch_now: bool = True) -> str:
     """Create work for an agent.
 
     Dispatchability is decided by the registry, not the caller. An agentic
@@ -612,8 +619,8 @@ def create_task(user: str, board: str, agent_no: str, title: str, body: str,
 
     create_args = ["create", title, "--body", body,
                    "--priority", str(priority), "--tenant", R.tenant_for(agent_no)]
-    if agent["is_agentic"]:
-        create_args += ["--completion-contract", "artifact-required"]
+    if agent["is_agentic"] and not gate["sources"]:
+        create_args += ["--assignee", agent["profile"]]
     out = _kanban(board, *create_args, "--json")
     task_id = json.loads(out)["id"]
 
@@ -622,16 +629,10 @@ def create_task(user: str, board: str, agent_no: str, title: str, body: str,
         _kanban(board, "link", s["task_id"], task_id)
 
     if agent["is_agentic"]:
-        _kanban(board, "assign", task_id, agent["profile"])
-        # Start it now rather than waiting for the gateway's ~60s poll.
-        # Someone who just pressed Create is watching the page; a minute of
-        # apparent nothing reads as "it didn't work" and invites a second
-        # submission. Best-effort: if this fails the task is already queued
-        # and assigned, so the next tick picks it up normally.
-        try:
-            _kanban(board, "dispatch")
-        except (subprocess.CalledProcessError, OSError):
-            pass
+        if gate["sources"]:
+            _kanban(board, "assign", task_id, agent["profile"])
+        if dispatch_now:
+            dispatch_task(board)
     # else: intentionally unassigned. A dispatcher cannot claim an
     # unassigned task, which is exactly the behaviour we want.
     return task_id
@@ -1109,7 +1110,7 @@ PROGRESS = {
     "triage":    ("Not started", "Waiting to be picked up."),
     "todo":      ("Not started", "Queued, no worker yet."),
     "scheduled": ("Not started", "Scheduled to run later."),
-    "ready":     ("Not started", "Ready for a worker to claim."),
+    "ready":     ("Queued", "Waiting for a worker to start."),
     "running":   ("Working on it now", "A worker is running this."),
     "review":    ("Finished", "Waiting on a person to review it."),
     "done":      ("Finished", "The worker finished and produced its result."),

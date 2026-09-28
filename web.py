@@ -8,14 +8,16 @@ cost without benefit.
 
 AUTHENTICATION IS STUBBED AND DEV-ONLY
 """
+import logging
 import os
 import re
 import secrets
+import subprocess
 import time
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
-from fastapi import FastAPI, Form, HTTPException, Query, Request
+from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import (FileResponse, HTMLResponse,
                                RedirectResponse)
 from fastapi.templating import Jinja2Templates
@@ -28,6 +30,7 @@ BASE = Path(__file__).parent
 
 app = FastAPI(title="AOS", docs_url=None, redoc_url=None)
 templates = Jinja2Templates(directory=str(BASE / "templates"))
+logger = logging.getLogger(__name__)
 
 
 
@@ -229,7 +232,8 @@ def _new_task_form(request: Request, user: str, agent: str | None,
 
 
 @app.post("/new")
-def create_task_post(request: Request, agent_no: str = Form(...),
+def create_task_post(request: Request, background_tasks: BackgroundTasks,
+                     agent_no: str = Form(...),
                      title: str = Form(...), body: str = Form(""),
                      priority: int = Form(3), user: str = Form(...),
                      source_task: str | None = Form(None)):
@@ -239,7 +243,8 @@ def create_task_post(request: Request, agent_no: str = Form(...),
         raise HTTPException(status_code=404, detail=f"unknown agent: {agent_no}")
     try:
         task_id = aos.create_task(user, agent["board"], agent_no,
-                                  title, body, priority, source_task=source_task)
+                                  title, body, priority, source_task=source_task,
+                                  dispatch_now=False)
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except aos.GateNotPassed as e:
@@ -250,6 +255,18 @@ def create_task_post(request: Request, agent_no: str = Form(...),
         return _new_task_form(request, user, agent_no, str(e),
                               {"title": title, "body": body, "priority": priority,
                                "source_task": source_task})
+    except (subprocess.CalledProcessError, OSError) as e:
+        logger.error("Task creation failed for agent %s on board %s: %s",
+                     agent_no, agent["board"],
+                     (e.stderr or "").strip() if isinstance(e, subprocess.CalledProcessError)
+                     else type(e).__name__)
+        return _new_task_form(
+            request, user, agent_no,
+            "Could not start the task. Ask IT to check the board before trying again.",
+            {"title": title, "body": body, "priority": priority,
+             "source_task": source_task}, status=503)
+    if agent["is_agentic"]:
+        background_tasks.add_task(aos.dispatch_task, agent["board"])
     return RedirectResponse(
         f"/task/{agent['board']}/{task_id}?as={user}", status_code=303)
 

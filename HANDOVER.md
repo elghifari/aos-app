@@ -47,7 +47,39 @@ against live code or tests when they matter.
   python -m unittest discover -s tests
   ```
 
-- Last result: **60 tests passed**; `bash tests/test_run_script.sh` also passed
+- Last result: **64 tests passed**; `bash tests/test_run_script.sh` also passed
+- On 2026-09-28, a `/new` 500 was traced to AOS passing the obsolete
+  `--completion-contract artifact-required` to `hermes kanban create`. Hermes
+  now accepts only `local-only` or a GitHub PR target. The unsupported flag
+  was removed; the artifact instruction remains in the task body, and Amber
+  release still requires an artifact-bound qualified signature. CLI failures
+  now re-render the form (503) with the brief retained, instead of a generic
+  500.
+- Responsive task creation (2026-09-28): a Create submission no longer waits on
+  three sequential CLI calls. Ordinary agentic work is assigned in the same
+  `create --assignee` call, the HTTP handler redirects to the task page as soon
+  as Hermes returns the real task ID, and dispatch runs after the response via a
+  FastAPI `BackgroundTask`. The ~60-second gateway tick remains the fallback if
+  that post-response dispatch is interrupted. Gated work (03b) is still created
+  unassigned, has its provenance `link` recorded first, and is only then
+  assigned — the prerequisite ordering is preserved. `ready` now renders as
+  **Queued / "Waiting for a worker to start."** so the redirect target is
+  truthful before a worker claims it. Both `/new` form variants expose a
+  `data-create-form` hook, a `data-create-button` that switches to "Creating…",
+  and a polite `role="status"` live region; `pageshow` restores the button on
+  bfcache back-navigation.
+- Verified live end-to-end on the restarted server: a public-literature 03a
+  task submitted through the real HTTP form returned `303` to
+  `t_333d485e` immediately, the task page rendered live state, and background
+  dispatch moved it to `running` assigned to `pod-p1-growth` without waiting for
+  the tick. (This smoke-test task is real board work pending clinical sign-off;
+  archive it when no longer needed.)
+- `run.sh`/`stop.sh` pidfile fix (2026-09-28): on Windows git-bash the `python`
+  launcher re-execs the runtime python as a child, so `$!` captured a
+  short-lived intermediate PID and the pidfile never matched the real listener —
+  `stop.sh` could not kill the server. `run.sh` now resolves the true listening
+  PID once the port answers; `stop.sh` kills by pidfile and then sweeps anything
+  still listening on 8077. Restart round-trip verified.
 - Tests use temporary board, registry, approval, filesystem, and profile-log
   fixtures. They do not call an LLM and do not use the live approvals DB.
 
@@ -60,8 +92,11 @@ and release of deliverables.
 Implemented employee flow:
 
 1. An owner chooses one of their registered agents and submits a task.
-2. Agentic work is assigned and dispatched immediately. The roughly 60-second
-   gateway tick remains a fallback if direct dispatch fails.
+2. For agentic work the assignee is set in the same `create` call, and the form
+   redirects to the task page as soon as the real task ID exists; dispatch runs
+   just after the response. The roughly 60-second gateway tick remains a
+   fallback if that post-response dispatch fails. Gated work (03b) is created
+   unassigned and assigned only after its provenance link is recorded.
 3. Home shows work as running, waiting, or finished.
 4. Task pages show plain-language progress rather than exposing only raw board
    status.
@@ -191,15 +226,30 @@ an informal check occurred; that would bypass the Agent 03 gate.
 
 ## Search reliability finding
 
-Hermes web search is not inherently unavailable to the pods. A direct test from
-`pod-p1-growth` returned results. However, the keyless provider path is
-intermittent: trial runs have recorded repeated Firecrawl/search failures.
+On 2026-09-28, `pod-p1-growth` was configured with `web.search_backend: tavily`,
+`web.extract_backend: tavily`, and `web.keyless_rescue: false`. Tavily is running
+keyless (no provider key was found in the profile or process). The model remains
+on the company-provided Anthropic credential; no personal GPT credential was
+added to P1. Its CLI toolset still has no terminal or code execution.
+
+A P1 CLI diagnostic successfully searched for a 2025 Indonesian autism paper,
+extracted the open-access Springer article 10.1007/s44202-025-00381-0, and read
+its Method and Results from the full saved page. A second P1 CLI call extracted
+the abstract of 10.1007/s44217-026-01149-x. A direct native Tavily extraction
+of the second URL first returned `Error fetching content` and succeeded on
+retry: keyless access is still not a production reliability guarantee. This
+was a profile CLI diagnostic, **not** an Agent 03a board run. The real
+commissioning flow remains to be tested with a user-created, non-patient task.
+
+`grounded-citations` is installed in P1, but its Python ledger/verifier cannot
+run inside the restricted worker. The evidence/quotation instructions can be
+followed; automated claim-to-quote verification needs a controlled host-side
+gate before it may be treated as enforced.
 
 The important defect was behavioural: a worker could lose source access and
 still report that citations had been verified. The standing prompt reduces that
-risk; the deterministic integrity hold prevents silent release. A paid Exa or
-Parallel key would improve availability but would not replace the integrity
-control.
+risk; the deterministic integrity hold prevents silent release. A keyed
+provider may improve availability but would not replace the integrity control.
 
 This desktop chat and each pod are separate Hermes profiles with isolated
 sessions and memories. AOS workers cannot see this conversation unless relevant

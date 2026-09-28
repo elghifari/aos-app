@@ -14,12 +14,15 @@ fi
 
 AOS_ENV=development nohup python -m uvicorn web:app \
   --host 127.0.0.1 --port "$PORT" > "$LOG" 2>&1 &
-echo $! > "$PIDFILE"
 disown 2>/dev/null
 
+# Do not trust $! for the pidfile. On Windows git-bash the `python` launcher
+# re-execs the real runtime python as a child, so $! points at an intermediate
+# that exits immediately. Resolve the real listener once the port is up.
 for attempt in {1..30}; do
   if [ "$(curl --max-time 2 -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$PORT/?as=u_marketing" 2>/dev/null)" = "200" ]; then
-    echo "up -> http://127.0.0.1:$PORT/?as=u_marketing"
+    python -c "import psutil,sys; print(next(p.pid for p in psutil.process_iter() if any(c.laddr.port==$PORT for c in p.net_connections(kind='inet') if c.status=='LISTEN')))" > "$PIDFILE" 2>/dev/null
+    echo "up -> http://127.0.0.1:$PORT/?as=u_marketing (pid $(cat "$PIDFILE"))"
     exit 0
   fi
   sleep 1

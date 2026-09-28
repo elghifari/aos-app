@@ -23,7 +23,7 @@
 
 {% elif focus %}
 {# ── Scoped: came from an agent page ─────────────────────── #}
-<form method="post" action="/new">
+<form method="post" action="/new" data-create-form>
   <input type="hidden" name="user" value="{{ user }}">
   <input type="hidden" name="agent_no" value="{{ focus.agent_no }}">
 
@@ -102,7 +102,8 @@
   {% include "_taskfields.html" %}
 
   <div style="margin-top:1.2rem">
-    <button class="primary" {{ "disabled" if focus.blocked or (gate and gate.gated and not gate.open) }}>Create</button>
+    <button class="primary" type="submit" data-create-button {{ "disabled" if focus.blocked or (gate and gate.gated and not gate.open) }}>Create</button>
+    <span id="create-progress" role="status" aria-live="polite" class="muted" hidden></span>
     <a href="/agent/{{ focus.agent_no }}?as={{ user }}"><button type="button">Cancel</button></a>
     <a href="/new?as={{ user }}" class="muted" style="margin-left:.6rem; font-size:.85rem">
       choose a different agent</a>
@@ -111,7 +112,7 @@
 
 {% else %}
 {# ── Unscoped: came from the home page ───────────────────── #}
-<form method="post" action="/new">
+<form method="post" action="/new" data-create-form>
   <input type="hidden" name="user" value="{{ user }}">
 
   <h2>Which agent</h2>
@@ -144,10 +145,36 @@
   {% include "_taskfields.html" %}
 
   <div style="margin-top:1.2rem">
-    <button class="primary">Create</button>
+    <button class="primary" type="submit" data-create-button>Create</button>
+    <span id="create-progress" role="status" aria-live="polite" class="muted" hidden></span>
     <a href="/?as={{ user }}"><button type="button">Cancel</button></a>
   </div>
 </form>
 {% endif %}
 
+<script>
+  const createForm = document.querySelector('[data-create-form]');
+  if (createForm) {
+    const createButton = createForm.querySelector('[data-create-button]');
+    const createProgress = document.getElementById('create-progress');
+    const initiallyDisabled = createButton.disabled;
+    createForm.addEventListener('submit', (event) => {
+      if (createButton.disabled) {
+        event.preventDefault();
+        return;
+      }
+      createButton.disabled = true;
+      createButton.textContent = 'Creating…';
+      createProgress.textContent = 'Creating task. Please wait.';
+      createProgress.hidden = false;
+    });
+    window.addEventListener('pageshow', (event) => {
+      if (!event.persisted) return;
+      createButton.disabled = initiallyDisabled;
+      createButton.textContent = 'Create';
+      createProgress.textContent = '';
+      createProgress.hidden = true;
+    });
+  }
+</script>
 {% endblock %}
